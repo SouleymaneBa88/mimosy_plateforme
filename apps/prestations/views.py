@@ -87,8 +87,21 @@ class DemandePrestationDetailView(generics.RetrieveUpdateAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return super().update(request, *args, **kwargs)
+        partial = kwargs.pop("partial", False)
 
+        serializer = self.get_serializer(
+            demande,
+            data=request.data,
+            partial=partial,
+        )
+
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        return Response(
+            DemandePrestationSerializer(demande).data,
+            status=status.HTTP_200_OK,
+        )
 
 class DemandePrestationAnnulerView(generics.GenericAPIView):
     """
@@ -123,8 +136,6 @@ class DemandePrestationAnnulerView(generics.GenericAPIView):
         demande.save(update_fields=["statut"])
 
         return Response(
-            {
-                "detail": "La demande a été annulée avec succès."
-            },
+            DemandePrestationSerializer(demande).data,
             status=status.HTTP_200_OK,
         )

@@ -31,7 +31,8 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
 
 class DemandePrestationCreateSerializer(serializers.ModelSerializer):
     """
-    Serializer utilisé par le client pour créer une demande.
+    Serializer utilisé par le client pour créer ou modifier
+    une demande de prestation.
     """
 
     class Meta:
@@ -43,3 +44,27 @@ class DemandePrestationCreateSerializer(serializers.ModelSerializer):
             "budget",
         ]
 
+    def validate_prestataire(self, prestataire):
+        """
+        Vérifie que le prestataire peut recevoir une demande.
+        """
+
+        if not prestataire.user.is_active:
+            raise serializers.ValidationError(
+                "Ce compte prestataire est désactivé."
+            )
+
+        if not prestataire.disponibilite:
+            raise serializers.ValidationError(
+                "Ce prestataire n'est actuellement pas disponible."
+            )
+
+        if (
+            prestataire.statut_verification
+            != prestataire.StatutVerification.VERIFIE
+        ):
+            raise serializers.ValidationError(
+                "Ce prestataire n'est pas encore vérifié."
+            )
+
+        return prestataire
