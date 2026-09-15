@@ -90,3 +90,21 @@ class ProfilPrestataireSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         url = obj.user.profile_photo.url
         return request.build_absolute_uri(url) if request else url
+
+
+class ProfilPrestataireMeSerializer(serializers.ModelSerializer):
+    """Permet au prestataire de consulter et modifier son propre profil."""
+
+    class Meta:
+        model = ProfilPrestataire
+        fields = [
+            "id",
+            "description",
+            "experience",
+            "disponibilite",
+            "statut_verification",
+        ]
+        read_only_fields = [
+            "id",
+            "statut_verification",
+        ]

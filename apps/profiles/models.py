@@ -34,5 +34,9 @@ class ProfilPrestataire(models.Model):
 				"user": "Le profil doit appartenir à un utilisateur prestataire."
 			})
 
+	def save(self, *args, **kwargs):
+		self.full_clean()
+		super().save(*args, **kwargs)
+
 	def __str__(self):
 		return f"Profil de {self.user}"
