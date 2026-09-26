@@ -8,6 +8,9 @@ serializers « Initier… » (quelle demande payer, quelle clé
 d'idempotence, quel retrait), jamais un montant de paiement ni un statut.
 """
 
+# On importe re pour normaliser les numéros de téléphone.
+import re
+
 # On importe les outils de sérialisation de Django REST Framework.
 from rest_framework import serializers
 
@@ -120,9 +123,50 @@ MOYENS_RETRAIT_CLIENT = [
 class InitierRetraitSerializer(serializers.Serializer):
     # Le montant à retirer, au moins 1.
     montant = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=1)
+
+    # Cette méthode refuse les centimes : PayDunya n'accepte que des montants entiers.
+    def validate_montant(self, valeur):
+        """
+        Documentation PayDunya (déboursement) : « amount must not be a
+        decimal value ». Sans ce contrôle, 1000.50 serait retiré du wallet
+        mais seulement 1000 envoyés au prestataire.
+        """
+        if valeur != valeur.to_integral_value():
+            raise serializers.ValidationError("Le montant doit être un nombre entier de FCFA.")
+        return valeur
     # Le moyen de retrait choisi, limité à Wave ou Orange Money.
     provider = serializers.ChoiceField(choices=MOYENS_RETRAIT_CLIENT)
     # Le numéro de destination du retrait.
     destination = serializers.CharField(max_length=30)
+
+    # Cette méthode valide et normalise le numéro qui recevra l'argent.
+    def validate_destination(self, valeur):
+        return normaliser_telephone_senegal(valeur)
     # La clé unique identifiant cette demande de retrait.
     idempotency_key = serializers.CharField(max_length=100)
+
+
+# Préfixes des numéros mobiles sénégalais (Orange, Free, Expresso, Promobile).
+_NUMERO_MOBILE_SENEGAL = re.compile(r"^7[05678]\d{7}$")
+
+
+# Cette fonction ramène un numéro sénégalais au format attendu par PayDunya.
+def normaliser_telephone_senegal(valeur: str) -> str:
+    """
+    PayDunya attend le numéro « sans l'indicatif pays » (documentation du
+    déboursement et exemples SoftPay : "777777777"). On accepte ce que les
+    gens tapent vraiment (espaces, points, tirets, +221, 00221) et on
+    renvoie 9 chiffres. Tout le reste est refusé AVANT d'appeler PayDunya :
+    un numéro faux enverrait l'argent d'un retrait au mauvais endroit.
+    """
+
+    chiffres = re.sub(r"[\s.\-()]", "", str(valeur or ""))
+    for prefixe in ("+221", "00221", "221"):
+        if chiffres.startswith(prefixe) and len(chiffres) == len(prefixe) + 9:
+            chiffres = chiffres[len(prefixe):]
+            break
+    if not _NUMERO_MOBILE_SENEGAL.match(chiffres):
+        raise serializers.ValidationError(
+            "Numéro invalide : 9 chiffres commençant par 70, 75, 76, 77 ou 78 (ex. 77 123 45 67)."
+        )
+    return chiffres

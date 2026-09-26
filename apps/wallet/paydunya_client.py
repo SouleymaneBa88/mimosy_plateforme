@@ -212,10 +212,17 @@ class PayDunyaClient:
         return self._post(f"{PAYDUNYA_DISBURSE_BASE_URL}/disburse/get-invoice", payload)
 
     # Cette méthode soumet réellement le déboursement réservé (seconde étape).
-    def soumettre_deboursement(self, disburse_invoice_token: str) -> dict:
-        """Étape 2/2 : soumet effectivement le déboursement réservé à l'étape 1."""
+    def soumettre_deboursement(self, disburse_invoice_token: str, disburse_id: Optional[str] = None) -> dict:
+        """
+        Étape 2/2 : soumet effectivement le déboursement réservé à l'étape 1.
+        `disburse_id` (facultatif, documenté) est notre propre référence
+        (l'id du Withdrawal) : PayDunya la renvoie dans le callback, ce qui
+        facilite le rapprochement dans son tableau de bord.
+        """
 
         payload = {"disburse_invoice": disburse_invoice_token}
+        if disburse_id:
+            payload["disburse_id"] = disburse_id
         return self._post(f"{PAYDUNYA_DISBURSE_BASE_URL}/disburse/submit-invoice", payload)
 
     # Cette méthode interroge PayDunya pour connaître le statut réel d'un déboursement.

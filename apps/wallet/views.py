@@ -163,7 +163,13 @@ class MesRetraitsView(APIView):
         except ErreurRetrait as erreur:
             return Response({"detail": str(erreur)}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(WithdrawalSerializer(retrait).data, status=status.HTTP_201_CREATED)
+        # Retrait refusé tout de suite par PayDunya : le solde a déjà été
+        # recrédité (voir services) ; on renvoie la raison au prestataire.
+        donnees = WithdrawalSerializer(retrait).data
+        if retrait.statut == Withdrawal.Statut.ECHOUE:
+            donnees["detail"] = getattr(retrait, "message_fournisseur", "") or "Le retrait a été refusé. Votre solde a été recrédité."
+            return Response(donnees, status=status.HTTP_400_BAD_REQUEST)
+        return Response(donnees, status=status.HTTP_201_CREATED)
 
 
 # Cette vue gère l'historique et l'initiation de paiements par le client.
