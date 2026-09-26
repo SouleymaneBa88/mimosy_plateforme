@@ -1,0 +1,102 @@
+# MIMOSY — orchestration Docker (base commune au développement et à la production).
+#
+#   docker compose up -d                 développement (+ docker-compose.override.yml, chargé automatiquement)
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d    production
+#
+# Services :
+#   db        PostgreSQL 16 : SOURCE DE VÉRITÉ, données dans le volume postgres_data
+#   redis     channel layer (événements temps réel) + cache partagé (tickets WebSocket)
+#   migrate   tâche unique : migrations + collectstatic, puis s'arrête
+#   backend   Django + Channels servi par Daphne (HTTP + WebSocket)
+#
+# db et redis ne publient aucun port sur la machine : seuls les conteneurs du
+# réseau « interne » peuvent les joindre.
+#
+# Variables : fichier .env.docker (non versionné), à créer depuis .env.docker.example.
+
+name: mimosy
+
+x-backend: &backend
+  image: mimosy-backend:local
+  build: .
+  env_file: .env.docker
+  networks: [interne]
+
+services:
+  db:
+    image: postgres:16-alpine
+    env_file: .env.docker
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # « prêt » = PostgreSQL accepte des connexions sur la base de MIMOSY.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [interne]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    # Aucune persistance sur disque : Redis ne transporte que des événements et
+    # des tickets de 30 s. Perdre son contenu ne perd aucune donnée métier.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [interne]
+    restart: unless-stopped
+
+  migrate:
+    <<: *backend
+    command: ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput"]
+    volumes:
+      - static_files:/app/staticfiles
+      - media:/app/media
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: "no"
+
+  backend:
+    <<: *backend
+    volumes:
+      - media:/app/media
+      - hf_cache:/app/.cache/huggingface
+    depends_on:
+      # Le serveur ne démarre qu'une fois les migrations appliquées avec succès.
+      migrate: { condition: service_completed_successfully }
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # Requête interne sur une page légère. L'en-tête indique « HTTPS » comme
+      # le ferait nginx, pour ne pas être redirigé quand HTTPS est obligatoire.
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8000/admin/login/', headers={'X-Forwarded-Proto': 'https'}), timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+# Noms EXPLICITES : ils ne dépendent pas du nom du projet Compose. Sans cela,
+# « docker compose -p autre_nom » ou un renommage du projet créerait des volumes
+# neufs et vides, et les données sembleraient perdues (elles resteraient dans
+# l'ancien volume). Noms « dev » ici ; la production utilise les siens
+# (docker-compose.prod.yml), pour ne jamais partager une base entre les deux.
+#
+# ATTENTION : « docker compose down -v » SUPPRIME ces volumes (base comprise).
+volumes:
+  postgres_data:   # base de données : SOURCE DE VÉRITÉ
+    name: mimosy_dev_postgres_data
+  media:           # fichiers déposés : photos, pièces d'identité, preuves de litige
+    name: mimosy_dev_media
+  static_files:    # fichiers statiques (recréés à chaque démarrage par collectstatic)
+    name: mimosy_dev_static_files
+  hf_cache:        # modèles d'IA (TrOCR) : évite de les retélécharger
+    name: mimosy_dev_hf_cache
+
+networks:
+  interne:
