@@ -11,13 +11,17 @@ les rassemble. Pour la partie paiement client (avant que l'argent n'entre dans l
 
 ```text
 Wallet        : un par ProfilPrestataire (jamais un par client — voir plus bas)
-                solde_bloque      : fonds réservés, pas encore retirables
+                solde_bloque      : fonds payés par le client, en attente de la fin de la prestation
                 solde_disponible  : fonds réellement retirables
+                solde_gele        : fonds immobilisés par un litige en cours (apps.disputes)
+                (trois contraintes SQL interdisent tout solde négatif)
 
 Transaction   : journal append-only, jamais modifiée après création
-                types : BLOCAGE, COMMISSION, LIBERATION, RETRAIT, REMBOURSEMENT
+                types : BLOCAGE, COMMISSION, LIBERATION, RETRAIT, REMBOURSEMENT,
+                        GEL_LITIGE, DEGEL_LITIGE, REATTRIBUTION_LITIGE
 
 Payment       : une TENTATIVE de paiement pour une DemandePrestation (voir docs/paiement.md)
+                statuts : INITIE, EN_ATTENTE, REUSSI, ECHOUE, ANNULE, REMBOURSE, A_REMBOURSER
 
 Withdrawal    : une demande de retrait d'un prestataire, traitée par PayDunya
                 (déboursement vers Wave Sénégal ou Orange Money Sénégal)
@@ -60,6 +64,16 @@ continue de se terminer normalement), et ne libère jamais deux fois le même pa
 (`Payment.fonds_liberes`). Le taux de commission vit à un seul endroit
 (`settings.COMMISSION_TAUX`, configurable par variable d'environnement) — jamais un `* 0.10`
 recopié ailleurs dans le code.
+
+## Un paiement ne bloque les fonds qu'une seule fois
+
+`marquer_paiement_reussi()` est le seul point d'entrée qui crée une `Transaction` `BLOCAGE`. Il
+verrouille la demande, le paiement puis le wallet (toujours dans cet ordre, pour éviter les
+interblocages) et relit le statut du paiement sous verrou : un callback PayDunya reçu deux fois,
+ou arrivé en même temps que la vérification active, ne bloque jamais deux fois. Si la demande
+est **déjà payée** par un autre paiement, le nouveau passe `A_REMBOURSER` **sans aucun effet sur
+le wallet** : l'argent est chez PayDunya et doit être rendu au client à la main (voir
+`docs/paiement.md`, section I). Testé avec de vrais threads PostgreSQL (`ConcurrenceReelleTests`).
 
 ## Retrait (payout) — vue d'ensemble
 
@@ -107,7 +121,8 @@ protection que la réservation de créneaux de `apps.rendezvous` (voir
 Si PayDunya refuse le déboursement (échec synchrone à la soumission) ou le signale `failed` plus
 tard (callback ou vérification active), `_restaurer_solde_apres_echec_retrait()` — une fonction
 unique, partagée par les trois chemins qui peuvent constater un échec — recrédite
-`solde_disponible` du montant exact, sous verrou, et crée une `Transaction` de type
+`solde_disponible` du montant exact, sous verrou (du retrait puis du wallet : deux callbacks
+d'échec simultanés ne recréditent qu'une fois), et crée une `Transaction` de type
 `REMBOURSEMENT` explicite : jamais un simple `pass` silencieux. Le journal permet toujours de
 répondre à "combien avait le prestataire avant, combien a été réservé, quel retrait a échoué,
 combien a été restauré, pourquoi" (voir les transactions `RETRAIT` et `REMBOURSEMENT`
@@ -129,7 +144,8 @@ ou `ECHOUE` (voir `test_callback_payout_recu_deux_fois_ne_recredite_pas_deux_foi
 ## Sécurité du callback de déboursement
 
 Même discipline que le callback de paiement (voir `docs/paiement.md`) : le hash SHA-512 de la
-Master Key est vérifié en premier (`PayDunyaClient.verifier_hash`), le `Withdrawal` est retrouvé
+Master Key est vérifié en premier (par `PayDunyaPaymentProvider.lire_callback_retrait`, qui
+s'appuie sur `PayDunyaClient.verifier_hash`), le `Withdrawal` est retrouvé
 par son `token` (`reference_externe`, seule donnée disponible ici — PayDunya n'a pas de
 `custom_data` pour le déboursement), et le montant reçu est comparé au montant attendu avant
 toute mise à jour (voir `apps.wallet.services.traiter_callback_payout_paydunya`).
