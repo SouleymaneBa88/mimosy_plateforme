@@ -845,6 +845,8 @@ def initier_retrait(prestataire, montant: Decimal, provider: str, destination: s
     # au solde disponible tout de suite, dans la même logique atomique
     # partagée avec un échec appris plus tard par callback.
     _restaurer_solde_apres_echec_retrait(retrait, montant, "Retrait échoué : montant recrédité")
+    # Raison donnée par le fournisseur, renvoyée au prestataire (jamais stockée).
+    retrait.message_fournisseur = resultat.message
     return retrait
 
 

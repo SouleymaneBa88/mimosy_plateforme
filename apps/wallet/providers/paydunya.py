@@ -189,7 +189,7 @@ class PayDunyaPaymentProvider(PaymentProvider):
 
         # Seconde étape : on soumet réellement le déboursement réservé.
         try:
-            soumission = client.soumettre_deboursement(disburse_token)
+            soumission = client.soumettre_deboursement(disburse_token, disburse_id=str(withdrawal.id))
         except Exception as erreur:
             # La facture existe côté PayDunya (get-invoice a réussi) mais
             # sa soumission a échoué au niveau réseau : on laisse la
@@ -202,8 +202,9 @@ class PayDunyaPaymentProvider(PaymentProvider):
                 message=f"Déboursement créé mais soumission incertaine : {erreur}",
             )
 
-        # Si PayDunya refuse la soumission, on renvoie un échec explicite.
-        if soumission.get("response_code") != "00":
+        # Si PayDunya refuse la soumission (ou l'annonce déjà "failed"), on
+        # renvoie un échec explicite : le service recrédite alors le solde.
+        if soumission.get("response_code") != "00" or soumission.get("status") == "failed":
             return ResultatProvider(
                 reussi=False,
                 reference_externe=disburse_token,
