@@ -1,0 +1,44 @@
+---
+title: MIMOSY — Litiges
+---
+classDiagram
+    direction LR
+    class Litige {
+        +uuid id
+        +str motif
+        +text description_client
+        +text description_prestataire
+        +str statut
+        +text decision_admin
+        +datetime date_creation
+        +datetime date_traitement
+        +decimal montant_concerne
+        +bool fonds_geles
+        +datetime date_decision
+        +datetime date_limite_reprise
+        +datetime date_confirmation_reprise
+    }
+    class PreuveLitige {
+        +uuid id
+        +str type_preuve
+        +file fichier
+        +str description
+        +datetime date_ajout
+    }
+    class User {
+        <<autre domaine>>
+    }
+    class ProfilPrestataire {
+        <<autre domaine>>
+    }
+    class DemandePrestation {
+        <<autre domaine>>
+    }
+    Litige "0..*" --> "1" DemandePrestation : demande_prestation
+    Litige "0..*" --> "1" User : client
+    Litige "0..*" --> "1" ProfilPrestataire : prestataire
+    Litige "0..*" --> "1" User : ouvert_par
+    Litige "0..*" --> "0..1" User : traite_par
+    Litige "0..*" --> "0..1" ProfilPrestataire : nouveau_prestataire
+    PreuveLitige "0..*" --> "1" Litige : litige
+    PreuveLitige "0..*" --> "1" User : deposee_par
