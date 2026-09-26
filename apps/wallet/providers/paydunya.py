@@ -20,7 +20,7 @@ import logging
 from django.conf import settings
 
 # On importe le modèle Withdrawal pour connaître les moyens de retrait possibles.
-from ..models import Withdrawal
+from ..models import Payment, Withdrawal
 # On importe le client PayDunya et ses constantes/erreurs.
 from ..paydunya_client import (
     WITHDRAW_MODE_ORANGE_MONEY_SENEGAL,
@@ -60,7 +60,7 @@ WITHDRAW_MODE_PAR_MOYEN = {
 # Cette classe implémente l'interface PaymentProvider en appelant réellement PayDunya.
 class PayDunyaPaymentProvider(PaymentProvider):
     # Cette méthode initie un paiement via PayDunya et renvoie l'URL de redirection.
-    def initier_paiement(self, payment) -> ResultatProvider:
+    def initier_paiement(self, payment, payeur=None) -> ResultatProvider:
         """
         Crée une facture de paiement PayDunya et renvoie l'URL de
         checkout vers laquelle rediriger le client.
@@ -130,13 +130,86 @@ class PayDunyaPaymentProvider(PaymentProvider):
                 message="Réponse PayDunya incomplète : token ou URL de paiement manquant.",
             )
 
-        # Sinon, la facture est créée : on renvoie l'URL de paiement, en attente de confirmation.
+        # Mode test : SoftPay n'existe pas en sandbox (voir paydunya_client),
+        # le client paie donc sur la page checkout sandbox de la même facture.
+        if not _softpay_actif() or payeur is None:
+            return ResultatProvider(
+                reussi=False,
+                en_attente=True,
+                reference_externe=reponse.get("token"),
+                url_paiement=url_checkout,
+                message="Facture PayDunya créée, en attente de paiement.",
+            )
+
+        # Mode live : la facture sert de support au paiement SoftPay choisi
+        # dans la modal (Wave ou Orange Money).
+        return self._payer_par_softpay(client, payment, reponse.get("token"), payeur)
+
+    # Cette méthode relance le paiement mobile d'une facture existante (reprise ou changement de moyen).
+    def relancer_paiement(self, payment, payeur) -> ResultatProvider:
+        """
+        Même facture, nouveau lien : un client qui a fermé la page Wave, ou
+        qui préfère finalement Orange Money, obtient un nouveau lien SoftPay
+        pour LA MÊME facture. Aucune seconde facture n'est créée, ce qui
+        garde la protection contre le double paiement (voir services).
+        En mode test, rien à relancer : on renvoie le checkout enregistré.
+        """
+
+        if not _softpay_actif() or not payment.reference_externe:
+            return super().relancer_paiement(payment, payeur)
+        try:
+            client = PayDunyaClient()
+        except PayDunyaConfigError as erreur:
+            return ResultatProvider(reussi=False, reference_externe=payment.reference_externe, message=str(erreur))
+        return self._payer_par_softpay(client, payment, payment.reference_externe, payeur)
+
+    # Cette méthode appelle l'endpoint SoftPay du moyen choisi et traduit sa réponse.
+    def _payer_par_softpay(self, client, payment, invoice_token, payeur) -> ResultatProvider:
+        """
+        `success: true` veut seulement dire « lien de paiement créé » : le
+        paiement reste EN_ATTENTE jusqu'au callback PayDunya confirmé (voir
+        services.traiter_callback_paiement_paydunya). En cas d'échec, le
+        token de la facture est tout de même renvoyé : si le client payait
+        malgré tout, son callback serait rapproché au lieu d'être perdu.
+        """
+
+        appel = {
+            Payment.MoyenPaiement.WAVE: client.payer_softpay_wave,
+            Payment.MoyenPaiement.ORANGE_MONEY: client.payer_softpay_orange_money,
+        }.get(payeur.moyen)
+        if appel is None:
+            return ResultatProvider(
+                reussi=False, reference_externe=invoice_token,
+                message=f"Moyen de paiement '{payeur.moyen}' non pris en charge.",
+            )
+
+        try:
+            reponse = appel(invoice_token, payeur.nom, payeur.email, payeur.telephone)
+        except PayDunyaAPIError as erreur:
+            logger.warning("SoftPay %s injoignable pour le paiement %s : %s", payeur.moyen, payment.id, erreur)
+            return ResultatProvider(reussi=False, reference_externe=invoice_token, message=str(erreur))
+
+        url = str(reponse.get("url") or "")
+        if reponse.get("success") is not True or not url.startswith("https://"):
+            # Deux formats d'erreur observés : {"success": false, "message": ...}
+            # et {"response_code": "1001", "response_text": ...} (compte sans KYC).
+            message = reponse.get("message") or reponse.get("response_text") or "PayDunya a refusé le paiement mobile."
+            logger.warning(
+                "SoftPay %s refusé pour le paiement %s : response_code=%s, message=%s",
+                payeur.moyen, payment.id, reponse.get("response_code"), message,
+            )
+            return ResultatProvider(reussi=False, reference_externe=invoice_token, message=message)
+
+        autres = reponse.get("other_url") if isinstance(reponse.get("other_url"), dict) else {}
+        liens = {cle: lien for cle, lien in autres.items() if isinstance(lien, str) and lien.startswith("https://")}
+        logger.info("Lien SoftPay %s créé pour le paiement %s (liens supplémentaires : %s).", payeur.moyen, payment.id, len(liens))
         return ResultatProvider(
             reussi=False,
             en_attente=True,
-            reference_externe=reponse.get("token"),
-            url_paiement=reponse.get("response_text"),
-            message="Facture PayDunya créée, en attente de paiement.",
+            reference_externe=invoice_token,
+            url_paiement=url,
+            liens_alternatifs=liens or None,
+            message=reponse.get("message") or "Lien de paiement créé, en attente de paiement.",
         )
 
     # Cette méthode initie un retrait via PayDunya, en deux étapes.
@@ -312,6 +385,11 @@ _STATUTS_PAYDUNYA = {
     "failed": STATUT_ECHOUE,
     "cancelled": STATUT_ECHOUE,
 }
+
+
+# Cette fonction indique si les paiements passent par SoftPay (live) ou par le checkout (test).
+def _softpay_actif() -> bool:
+    return settings.PAYDUNYA_MODE == "live"
 
 
 # Cette fonction traduit un statut PayDunya ; tout statut inconnu reste "inconnu".

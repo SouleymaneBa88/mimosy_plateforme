@@ -44,6 +44,8 @@ from apps.prestations.models import DemandePrestation
 
 # On importe tous les modèles de cette app.
 from .models import Payment, Transaction, Wallet, Withdrawal
+# On importe la structure décrivant le payeur (moyen, numéro, nom, e-mail).
+from .providers.base import DetailsPayeur
 # On importe les permissions personnalisées de cette app.
 from .permissions import IsAdmin, IsClient, IsPrestataire
 # On importe tous les serializers utilisés dans ce fichier.
@@ -196,27 +198,38 @@ class MesPaiementsView(APIView):
         except ObjectDoesNotExist:
             raise NotFound("Demande de prestation introuvable.")
 
+        # Le payeur : moyen et numéro choisis dans la modal ; nom et e-mail
+        # viennent du compte connecté, jamais de la requête.
+        utilisateur = request.user
+        payeur = DetailsPayeur(
+            moyen=serializer.validated_data["moyen_paiement"],
+            telephone=serializer.validated_data["telephone"],
+            nom=f"{utilisateur.first_name} {utilisateur.last_name}".strip() or utilisateur.email,
+            email=utilisateur.email,
+        )
+
         # On lance la tentative de paiement via la logique métier.
         try:
             paiement = initier_paiement(
-                client=request.user,
+                client=utilisateur,
                 demande_prestation=demande,
                 idempotency_key=serializer.validated_data["idempotency_key"],
+                payeur=payeur,
             )
         except ErreurPaiement as erreur:
             return Response({"detail": str(erreur)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # EN_ATTENTE (PayDunya : le frontend redirige vers url_paiement)
-        # et REUSSI (sandbox) sont une création réussie : 201. Une
-        # tentative déjà en cours renvoyée telle quelle (reprise, double
-        # clic, second onglet) : 200. Seul ECHOUE est un échec : 400.
-        if paiement.statut == Payment.Statut.ECHOUE:
-            code = status.HTTP_400_BAD_REQUEST
-        elif getattr(paiement, "reutilise", False):
-            code = status.HTTP_200_OK
-        else:
-            code = status.HTTP_201_CREATED
-        return Response(PaymentSerializer(paiement, context={"request": request}).data, status=code)
+        # EN_ATTENTE (le frontend redirige vers url_paiement) et REUSSI
+        # (sandbox) sont une création réussie : 201. Une tentative déjà en
+        # cours renvoyée telle quelle (reprise, double clic, second onglet) :
+        # 200. Échec (ECHOUE, ou relance refusée par PayDunya) : 400, avec
+        # la raison donnée par PayDunya dans "detail" — jamais un échec muet.
+        donnees = PaymentSerializer(paiement, context={"request": request}).data
+        if paiement.statut == Payment.Statut.ECHOUE or getattr(paiement, "relance_echouee", False):
+            donnees["detail"] = getattr(paiement, "message_fournisseur", "") or "Le paiement n'a pas pu être préparé."
+            return Response(donnees, status=status.HTTP_400_BAD_REQUEST)
+        code = status.HTTP_200_OK if getattr(paiement, "reutilise", False) else status.HTTP_201_CREATED
+        return Response(donnees, status=code)
 
 
 # Cette vue vérifie activement le statut réel d'un paiement auprès de PayDunya.

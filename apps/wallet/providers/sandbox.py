@@ -29,7 +29,7 @@ from .base import PaymentProvider, ResultatProvider
 # Ce fournisseur simule toujours un succès immédiat, sans jamais appeler de service externe.
 class SandboxProvider(PaymentProvider):
     # Cette méthode simule un paiement toujours réussi.
-    def initier_paiement(self, payment) -> ResultatProvider:
+    def initier_paiement(self, payment, payeur=None) -> ResultatProvider:
         return ResultatProvider(
             reussi=True,
             reference_externe=f"SANDBOX-PAY-{uuid.uuid4().hex[:12]}",

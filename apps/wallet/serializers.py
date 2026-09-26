@@ -63,10 +63,21 @@ class PaymentSerializer(serializers.ModelSerializer):
             "provider",
             "reference_externe",
             "url_paiement",
+            "moyen_paiement",
+            "liens_paiement",
             "date_creation",
         ]
         # Tous ces champs sont en lecture seule.
         read_only_fields = fields
+
+    # Liens supplémentaires éventuels (Orange Money), présents seulement dans la réponse de création.
+    liens_paiement = serializers.SerializerMethodField()
+
+    # Cette méthode renvoie les liens supplémentaires, avec les mêmes règles que url_paiement.
+    def get_liens_paiement(self, obj):
+        if self.get_url_paiement(obj) is None:
+            return None
+        return getattr(obj, "liens_paiement", None)
 
     # Cette méthode renvoie l'URL de paiement PayDunya, au seul propriétaire, et seulement si elle sert encore.
     def get_url_paiement(self, obj):
@@ -91,10 +102,24 @@ class PaymentSerializer(serializers.ModelSerializer):
 
 # Ce serializer valide la demande d'initier un paiement.
 class InitierPaiementSerializer(serializers.Serializer):
+    """
+    Ce que la modal de paiement envoie. Volontairement AUCUN montant : il
+    est lu dans la demande (voir services.initier_paiement). Un champ
+    `montant` envoyé quand même est ignoré.
+    """
+
     # L'identifiant de la demande de prestation à payer.
     demande_prestation = serializers.UUIDField()
     # La clé unique identifiant cette tentative de paiement.
     idempotency_key = serializers.CharField(max_length=100)
+    # Le moyen choisi dans la modal : Wave ou Orange Money.
+    moyen_paiement = serializers.ChoiceField(choices=Payment.MoyenPaiement.choices)
+    # Le numéro du compte Wave / Orange Money qui va payer.
+    telephone = serializers.CharField(max_length=20)
+
+    # Cette méthode valide et normalise le numéro (9 chiffres, sans indicatif).
+    def validate_telephone(self, valeur):
+        return normaliser_telephone_senegal(valeur)
 
 
 # Ce serializer expose une demande de retrait.

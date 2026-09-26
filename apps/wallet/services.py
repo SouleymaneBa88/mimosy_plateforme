@@ -51,6 +51,8 @@ from __future__ import annotations
 import logging
 # On importe timedelta pour calculer l'âge d'un paiement INITIE.
 from datetime import timedelta
+# On importe Optional pour les paramètres facultatifs.
+from typing import Optional
 # On importe Decimal pour manipuler des nombres précis (montants d'argent).
 from decimal import Decimal, InvalidOperation
 
@@ -75,6 +77,7 @@ from .providers import get_provider
 from .providers.base import (
     STATUT_ECHOUE,
     STATUT_REUSSI,
+    DetailsPayeur,
     ErreurFournisseur,
     ResultatVerification,
 )
@@ -184,7 +187,12 @@ def _relire_apres_conflit(client, demande_prestation: DemandePrestation, idempot
 
 
 # Cette fonction lance (ou reprend) le paiement d'une demande de prestation.
-def initier_paiement(client, demande_prestation: DemandePrestation, idempotency_key: str) -> Payment:
+def initier_paiement(
+    client,
+    demande_prestation: DemandePrestation,
+    idempotency_key: str,
+    payeur: Optional[DetailsPayeur] = None,
+) -> Payment:
     """
     Initie une tentative de paiement, ou renvoie la tentative déjà en cours.
 
@@ -198,6 +206,11 @@ def initier_paiement(client, demande_prestation: DemandePrestation, idempotency_
 
     Le montant n'est JAMAIS pris depuis la requête : il vient toujours
     de demande_prestation.budget, validé par le workflow de demande.
+
+    `payeur` (moyen Wave / Orange Money + numéro, choisis dans la modal)
+    ne sert qu'au fournisseur pour créer le lien de paiement mobile ; il
+    ne change jamais le montant. Une reprise avec un autre moyen relance
+    le paiement sur LA MÊME facture (voir _reprendre_paiement).
 
     Concurrence (double clic, deux onglets, deux requêtes simultanées) :
     la décision « créer ou réutiliser » est prise SOUS le verrou de la
@@ -248,34 +261,36 @@ def initier_paiement(client, demande_prestation: DemandePrestation, idempotency_
             if demande_verrouillee.statut != DemandePrestation.Statut.ACCEPTEE:
                 raise ErreurPaiement("Seule une demande acceptée peut être payée.")
 
-            # Une tentative est déjà en cours : on la renvoie, sans nouvelle facture.
-            if actif is not None:
-                actif.reutilise = True
-                return actif
+            # Une tentative est déjà en cours : elle sera renvoyée (et son lien
+            # relancé si besoin) APRÈS le verrou, car relancer appelle PayDunya.
+            if actif is None:
+                # Le montant vient uniquement de la base.
+                if demande_verrouillee.budget is None or demande_verrouillee.budget <= 0:
+                    raise ErreurPaiement("Le montant de cette demande n'est pas valide.")
 
-            # Le montant vient uniquement de la base.
-            if demande_verrouillee.budget is None or demande_verrouillee.budget <= 0:
-                raise ErreurPaiement("Le montant de cette demande n'est pas valide.")
-
-            paiement = Payment.objects.create(
-                client=client,
-                demande_prestation=demande_verrouillee,
-                montant=demande_verrouillee.budget,
-                provider=_provider_actuel(),
-                idempotency_key=idempotency_key,
-            )
+                paiement = Payment.objects.create(
+                    client=client,
+                    demande_prestation=demande_verrouillee,
+                    montant=demande_verrouillee.budget,
+                    provider=_provider_actuel(),
+                    moyen_paiement=payeur.moyen if payeur else "",
+                    idempotency_key=idempotency_key,
+                )
     except IntegrityError:
         # Une requête concurrente a créé le paiement juste avant nous
         # (même clé ou même demande) : on renvoie le sien, pas une erreur 500.
         return _relire_apres_conflit(client, demande_prestation, idempotency_key)
 
+    if actif is not None:
+        return _reprendre_paiement(actif, payeur)
+
     logger.info(
-        "Paiement %s créé (demande %s, montant %s, fournisseur %s).",
-        paiement.id, demande_prestation.pk, paiement.montant, paiement.provider,
+        "Paiement %s créé (demande %s, montant %s, fournisseur %s, moyen %s).",
+        paiement.id, demande_prestation.pk, paiement.montant, paiement.provider, paiement.moyen_paiement or "-",
     )
 
-    # Étape 4 — HORS verrou : appel au fournisseur (création de la facture).
-    resultat = get_provider().initier_paiement(paiement)
+    # Étape 4 — HORS verrou : appel au fournisseur (facture, puis lien de paiement mobile en live).
+    resultat = get_provider().initier_paiement(paiement, payeur)
 
     # Facture créée : on enregistre le token et l'URL de paiement PayDunya.
     if resultat.en_attente:
@@ -295,6 +310,9 @@ def initier_paiement(client, demande_prestation: DemandePrestation, idempotency_
             Payment.objects.filter(pk=paiement.pk).update(reference_externe=resultat.reference_externe or "")
             logger.warning("Paiement %s abandonné avant la réponse du fournisseur : facture non proposée.", paiement.id)
         paiement.refresh_from_db()
+        # Liens supplémentaires (Orange Money : application, Max it) : utiles
+        # uniquement dans cette réponse, jamais enregistrés.
+        paiement.liens_paiement = resultat.liens_alternatifs
         logger.info(
             "Paiement %s : statut %s (token reçu : %s, URL de paiement reçue : %s).",
             paiement.id, paiement.statut, "oui" if resultat.reference_externe else "NON",
@@ -310,12 +328,46 @@ def initier_paiement(client, demande_prestation: DemandePrestation, idempotency_
             date_modification=timezone.now(),
         )
         paiement.refresh_from_db()
+        # Message du fournisseur (ex. « compte sans KYC », PayDunya injoignable),
+        # renvoyé tel quel au client : jamais d'échec silencieux.
+        paiement.message_fournisseur = resultat.message
         logger.warning("Paiement %s ECHOUE à la création : %s", paiement.id, resultat.message)
         return paiement
 
     # Sinon (sandbox uniquement), le paiement est confirmé immédiatement.
     marquer_paiement_reussi(paiement, resultat.reference_externe or "")
     paiement.refresh_from_db()
+    return paiement
+
+
+# Cette fonction renvoie un paiement déjà en cours, en relançant son lien de paiement si besoin.
+def _reprendre_paiement(paiement: Payment, payeur: Optional[DetailsPayeur]) -> Payment:
+    """
+    « Reprendre le paiement » : le client a fermé la page Wave, ou choisit
+    maintenant Orange Money. On demande au fournisseur un nouveau lien pour
+    LA MÊME facture (jamais une seconde facture : c'est ce qui empêche un
+    double paiement). Appelée hors verrou, car elle appelle PayDunya.
+    Si la relance échoue, le paiement reste EN_ATTENTE (la facture est
+    toujours valable) et le message du fournisseur est renvoyé au client.
+    """
+
+    paiement.reutilise = True
+    if paiement.statut != Payment.Statut.EN_ATTENTE or payeur is None:
+        return paiement
+
+    resultat = _provider_du_paiement(paiement).relancer_paiement(paiement, payeur)
+    if resultat.en_attente and resultat.url_paiement:
+        # Conditionnel : si le paiement a été conclu entre-temps, on n'y touche pas.
+        Payment.objects.filter(pk=paiement.pk, statut=Payment.Statut.EN_ATTENTE).update(
+            url_paiement=resultat.url_paiement,
+            moyen_paiement=payeur.moyen,
+            date_modification=timezone.now(),
+        )
+        paiement.refresh_from_db()
+        paiement.liens_paiement = resultat.liens_alternatifs
+    else:
+        paiement.message_fournisseur = resultat.message
+        paiement.relance_echouee = True
     return paiement
 
 
