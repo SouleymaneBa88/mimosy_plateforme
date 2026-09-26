@@ -1,217 +1,240 @@
-# Soutenance — le paiement dans MIMOSY
+# Soutenance — le paiement et le retrait dans MIMOSY
 
-Fiche de préparation : les questions probables du jury sur le paiement, avec pour chacune une
-**réponse courte** (à dire), une **explication technique** (si le jury creuse) et le **fichier**
-où le montrer. Le détail complet est dans `docs/paiement.md` et `docs/wallet.md`.
+Fiche de préparation. Pour chaque question : la **réponse courte** (à dire), l'**explication** (si
+le jury creuse) et le **fichier** à montrer. Détails : `docs/paiement.md`, `docs/wallet.md`.
 
-> **À dire honnêtement si on vous le demande.** Le code est testé automatiquement (tests unitaires
-> et tests de concurrence réelle sur PostgreSQL, PayDunya étant remplacé par des réponses au
-> format de sa documentation). Le parcours complet avec un vrai compte PayDunya sandbox
-> (page de paiement, callback reçu via ngrok) doit être validé à la main — ne présentez comme
-> « démontré » que ce qui a réellement été observé.
+> **À dire honnêtement.** Le paiement par **Checkout PayDunya en mode test** a été testé de bout en
+> bout en réel (paiement sandbox, webhook reçu via ngrok, fonds bloqués). **SoftPay** (Wave /
+> Orange Money) et le **retrait** sont codés et couverts par des tests automatisés, mais ne sont pas
+> testables en réel tant que le compte PayDunya n'a pas son KYC validé et ses clés live : PayDunya
+> n'offre ni SoftPay ni déboursement en mode test. Ne présentez comme « démontré » que ce qui l'a été.
 
-## Le parcours en une phrase
+## Le parcours en deux phrases
 
-Le client clique « Payer » ; MIMOSY crée une facture chez PayDunya et redirige le navigateur vers
-la page de paiement PayDunya ; le client paie avec Wave ou Orange Money ; PayDunya prévient MIMOSY
-par un webhook ; MIMOSY vérifie ce message, redemande confirmation à PayDunya, puis bloque l'argent
-sur le wallet du prestataire jusqu'à la fin de la prestation.
-
-```text
-Vue → API Django → services.py → PaymentProvider → PayDunyaPaymentProvider → PayDunyaClient → PayDunya
-```
+**Paiement** : le client clique « Payer », choisit Wave ou Orange Money dans une modal ; MIMOSY crée
+une facture PayDunya et un lien de paiement mobile ; quand PayDunya confirme par webhook, MIMOSY
+bloque l'argent sur le wallet du prestataire jusqu'à la fin de la prestation.
+**Retrait** : le prestataire demande un retrait de son solde disponible ; MIMOSY réserve le montant,
+demande à PayDunya d'envoyer l'argent sur son Wave / Orange Money, puis confirme ou recrédite selon
+le callback.
 
 ---
 
-### 1. « Pourquoi PayDunya ? »
+# Questions possibles du jury
 
-**Réponse courte.** Parce qu'un seul contrat nous donne Wave, Orange Money et d'autres moyens de
-paiement sénégalais, avec une page de paiement hébergée et sécurisée par PayDunya.
+### 1. Pourquoi PayDunya ?
 
-**Explication technique.** PayDunya fournit une API de facture (`checkout-invoice/create`), une
-page de paiement hébergée, un webhook signé et une API de vérification (`checkout-invoice/confirm`).
-MIMOSY ne manipule donc jamais un numéro de carte ni un code Wave : c'est PayDunya qui gère
-l'encaissement. Il fournit aussi le déboursement vers Wave / Orange Money pour les retraits des
-prestataires, et un environnement sandbox pour tester sans argent réel.
+**Réponse courte.** Un seul partenaire nous donne Wave, Orange Money et les autres moyens sénégalais,
+pour encaisser **et** pour reverser l'argent aux prestataires.
+
+**Explication.** PayDunya propose la création de factures, le paiement mobile (SoftPay), un webhook
+signé, une API de vérification et une API de déboursement vers Wave / Orange Money. MIMOSY ne
+manipule jamais de code secret Wave ni de carte : l'encaissement est fait par PayDunya.
 
 **Fichiers.** `apps/wallet/paydunya_client.py`, `apps/wallet/providers/paydunya.py`.
 
-### 2. « Pourquoi utiliser un provider ? »
+### 2. Pourquoi SoftPay ?
 
-**Réponse courte.** Pour séparer nos règles métier du fournisseur de paiement : si on change de
-fournisseur demain, les règles d'argent ne bougent pas.
+**Réponse courte.** Pour que le client choisisse Wave ou Orange Money directement dans MIMOSY, sans
+passer par une page intermédiaire : moins d'étapes, donc moins d'abandons.
 
-**Explication technique.** `services.py` contient les règles (qui peut payer, combien, quand
-bloquer les fonds, que faire d'un doublon). Il ne parle qu'à une interface, `PaymentProvider`,
-qui renvoie des statuts neutres (`REUSSI`, `ECHOUE`, `EN_ATTENTE`, `INCONNU`). Chaque fournisseur
-implémente cette interface : `PayDunyaPaymentProvider` pour le vrai paiement, `SandboxProvider`
-pour développer sans compte. C'est le principe d'inversion de dépendance : le métier ne dépend
-pas du détail technique. Bonus : on teste le métier sans appeler Internet.
+**Explication.** SoftPay prend le token d'une facture et renvoie directement un lien Wave ou un QR
+code / lien Orange Money. En mode test, SoftPay n'existe pas chez PayDunya : la même facture ouvre
+alors la page Checkout sandbox, ce qui permet de tester tout le reste (webhook, wallet).
 
-**Fichiers.** `apps/wallet/providers/base.py`, `providers/__init__.py` (`get_provider`),
-`services.py`.
+**Fichiers.** `providers/paydunya.py` (`_payer_par_softpay`, `_softpay_actif`).
 
-### 3. « Pourquoi ne pas intégrer directement Wave et Orange Money ? »
+### 3. Quelle différence entre paiement et retrait ?
 
-**Réponse courte.** Deux intégrations, deux contrats marchands, deux formats de webhook à
-maintenir ; PayDunya nous donne les deux (et plus) à travers une seule API.
+**Réponse courte.** Le paiement fait **entrer** l'argent du client chez MIMOSY ; le retrait le fait
+**sortir** de MIMOSY vers le prestataire.
 
-**Explication technique.** Chaque opérateur a son propre processus d'agrément marchand, ses clés,
-son format de notification et ses cas d'erreur. Au début du projet, des classes Wave et Orange
-Money directes existaient mais restaient des coquilles vides faute d'accès marchand. PayDunya
-agrège ces opérateurs : le client choisit son moyen de paiement **sur la page PayDunya**, et MIMOSY
-n'a qu'un seul flux à sécuriser. Grâce au provider (question 2), une intégration directe resterait
-possible plus tard sans toucher au métier.
+**Explication.** Paiement : facture + SoftPay, confirmé par le webhook de paiement, fonds **bloqués**.
+Retrait : API de déboursement (get-invoice puis submit-invoice), confirmé par le webhook de retrait,
+à partir du solde **disponible** seulement.
 
-**Fichiers.** `apps/wallet/providers/paydunya.py` (`WITHDRAW_MODE_PAR_MOYEN` pour les retraits).
+**Fichiers.** `services.py` (`initier_paiement`, `initier_retrait`).
 
-### 4. « Pourquoi utiliser un webhook ? »
+### 4. Pourquoi le frontend ne communique-t-il pas directement avec PayDunya ?
 
-**Réponse courte.** Parce que c'est PayDunya, et pas le navigateur, qui sait si le client a payé :
-le webhook est PayDunya qui nous le dit directement, de serveur à serveur.
+**Réponse courte.** Parce qu'il faudrait mettre nos clés PayDunya dans le navigateur, où n'importe
+qui peut les lire.
 
-**Explication technique.** Le paiement se fait sur le site de PayDunya ; MIMOSY ne voit rien. Le
-webhook `POST /api/wallet/webhooks/paydunya/` est appelé par les serveurs PayDunya dès que le
-paiement est conclu, même si le client a fermé son navigateur. Comme cette URL est publique, on
-ne lui fait pas confiance aveuglément : on vérifie le **hash** (preuve que ça vient de PayDunya),
-le **token** de la facture, le **montant**, puis on **redemande le statut** à PayDunya avant de
-bloquer les fonds. On répond toujours 200 pour éviter des renvois inutiles.
+**Explication.** Avec les clés, un inconnu pourrait créer des factures ou déclencher des retraits au
+nom de MIMOSY. Le frontend ne parle qu'à notre API ; le backend garde les clés et applique les règles
+(montant, droits, verrous).
 
-**Fichiers.** `apps/wallet/views.py` (`PayDunyaCallbackView`), `services.py`
-(`traiter_callback_paiement_paydunya`), `providers/paydunya.py` (`lire_callback_paiement`).
+**Fichiers.** `services/walletService.js` (aucune clé), `config/settings.py`.
 
-### 5. « Pourquoi ngrok en développement ? »
+### 5. Pourquoi utiliser un webhook ?
 
-**Réponse courte.** Parce que les serveurs de PayDunya ne peuvent pas joindre `localhost` ; ngrok
-donne à mon backend local une adresse publique temporaire pour recevoir le webhook.
+**Réponse courte.** Parce que seul PayDunya sait si le client a vraiment payé ; le webhook, c'est
+PayDunya qui nous le dit, de serveur à serveur.
 
-**Explication technique.** La redirection vers PayDunya et le retour vers MIMOSY passent par le
-navigateur, qui est sur ma machine : ils marchent en local. Le webhook, lui, part des serveurs
-PayDunya sur Internet. `ngrok http 8000` crée un tunnel `https://<id>.ngrok-free.app` → `localhost:8000`.
-On met cette URL dans `PAYDUNYA_CALLBACK_URL` et le domaine dans `ALLOWED_HOSTS`. En production,
-ngrok disparaît : on utilise le vrai domaine HTTPS.
+**Explication.** Le paiement se passe dans Wave ou Orange Money ; MIMOSY ne voit rien. Le webhook
+arrive même si le client ferme son téléphone. On vérifie le hash, le token, le montant, la demande,
+puis on redemande confirmation à PayDunya.
 
-**Fichiers.** `docs/paiement.md` (section K), `back_Mimosy/.env.docker` (non versionné).
+**Fichiers.** `views.py` (`PayDunyaCallbackView`), `services.py` (`traiter_callback_paiement_paydunya`).
 
-### 6. « Pourquoi le navigateur ne suffit-il pas pour confirmer un paiement ? »
+### 6. Comment empêchez-vous un double paiement ?
 
-**Réponse courte.** Parce qu'un client peut revenir sur la page « merci » sans avoir payé : fermer
-l'onglet, faire « retour », ou taper l'URL à la main.
+**Réponse courte.** Une seule facture active par demande, garantie par un verrou en base **et** une
+contrainte SQL ; et une reprise réutilise la même facture.
 
-**Explication technique.** Le retour vers `/client/paiement/retour` n'est qu'une redirection ; ce
-n'est pas une preuve. La page de retour n'affiche donc rien d'elle-même : elle appelle
-`GET /api/wallet/mes-paiements/<id>/statut/`, et c'est le **backend** qui interroge PayDunya
-(`checkout-invoice/confirm`). « Paiement réussi » ne s'affiche que si le backend répond `REUSSI`.
-Aucune API ne permet au client de déclarer lui-même un paiement réussi.
+**Explication.** La décision « créer ou reprendre » est prise sous `select_for_update` ; la
+contrainte `un_seul_paiement_actif_par_demande` bloque le reste. « Reprendre » avec un autre moyen
+demande un nouveau lien pour **la même facture**. Si deux paiements arrivaient quand même, le second
+passe `A_REMBOURSER` sans toucher au wallet. Prouvé par des tests multi-threads sur PostgreSQL.
 
-**Fichiers.** `mimosy/src/views/client/PaiementRetour.vue`, `services.py`
-(`verifier_statut_paiement`).
+**Fichiers.** `services.py`, `models.py`, `tests.py` (`ConcurrenceReelleTests`).
 
-### 7. « Comment évitez-vous les doubles paiements ? »
+### 7. Comment empêchez-vous un double retrait ?
 
-**Réponse courte.** Une seule facture active par demande, garantie à trois niveaux : un verrou en
-base, une contrainte SQL, et la réutilisation de la facture existante.
+**Réponse courte.** Le solde est vérifié et **débité immédiatement** sous verrou : un second retrait
+voit déjà le solde réduit.
 
-**Explication technique.**
-- **Verrou** : la décision « créer ou réutiliser » est prise sous `select_for_update()` sur la
-  demande ; le paiement `INITIE` est écrit avant de relâcher le verrou, donc une seconde requête
-  (double clic, deux onglets) le voit forcément.
-- **Réutilisation** : si un paiement est `EN_ATTENTE`, on renvoie **la même URL PayDunya**
-  (« Reprendre le paiement ») au lieu d'en créer une seconde.
-- **Contrainte SQL** `un_seul_paiement_actif_par_demande` : PostgreSQL refuse un second paiement
-  actif même si un code oubliait le verrou.
-- **Idempotence** : chaque clic porte une `idempotency_key` unique ; la rejouer renvoie le même
-  paiement.
-- **Côté wallet** : les fonds ne sont bloqués qu'une fois, même si le webhook arrive deux fois.
+**Explication.** `initier_retrait` verrouille le wallet, vérifie `montant ≤ disponible`, déduit, puis
+appelle PayDunya. Deux retraits simultanés de 6 000 sur 9 000 : un seul passe (testé avec deux
+connexions PostgreSQL). La clé d'idempotence évite aussi le double clic.
 
-Prouvé par des tests avec de vrais threads concurrents sur PostgreSQL.
+**Fichiers.** `services.py` (`initier_retrait`), `tests.py` (`ConcurrenceRetraitTests`).
 
-**Fichiers.** `services.py` (`initier_paiement`, `marquer_paiement_reussi`), `models.py`
-(contraintes), `tests.py` (`ConcurrenceReelleTests`, `RepriseFactureTests`).
+### 8. Comment protégez-vous les clés PayDunya ?
 
-### 8. « Pourquoi le montant vient-il du backend ? »
+**Réponse courte.** Elles sont uniquement dans des variables d'environnement du serveur, jamais dans
+le code, Git, le frontend ou les logs.
 
-**Réponse courte.** Parce que tout ce qui vient du navigateur peut être modifié par l'utilisateur ;
-sinon, un client pourrait payer 1 FCFA une prestation à 10 000.
+**Explication.** `settings.py` les lit dans l'environnement (`.env.docker`, ignoré par Git et exclu
+de l'image Docker). Les logs n'écrivent que « token reçu : oui/non ». Des tests vérifient qu'aucune
+réponse d'API ne contient une clé ; un contrôle des logs a donné 0 occurrence.
 
-**Explication technique.** L'API de paiement ne reçoit que l'identifiant de la demande et une
-clé d'idempotence. Le montant est lu en base (`demande_prestation.budget`, validé par le workflow
-de demande) et c'est lui qui est envoyé à PayDunya. À la confirmation, on vérifie aussi que le
-montant annoncé par PayDunya est exactement celui attendu. Un test envoie volontairement
-`"montant": "1"` et vérifie qu'il est ignoré.
+**Fichiers.** `config/settings.py`, `.gitignore`, `.dockerignore`, `tests.py` (`PayDunyaSecuriteTests`).
 
-**Fichiers.** `services.py` (`initier_paiement`), `tests.py`
-(`test_montant_derive_du_budget_serveur_meme_avec_paydunya`).
+### 9. Que se passe-t-il si le webhook arrive deux fois ?
 
-### 9. « Que se passe-t-il si PayDunya confirme deux fois le même paiement ? »
+**Réponse courte.** Rien de plus : la deuxième fois est reconnue et ignorée.
 
-**Réponse courte.** Rien de plus : la deuxième confirmation est reconnue et ignorée, l'argent
-n'est bloqué qu'une fois.
+**Explication.** `marquer_paiement_reussi` verrouille le paiement et relit son statut : déjà `REUSSI`
+→ arrêt. Même chose si le webhook et la vérification du client arrivent en même temps. Pour un
+retrait, un double callback d'échec ne recrédite qu'une fois.
 
-**Explication technique.** `marquer_paiement_reussi()` verrouille le paiement et relit son statut
-**sous verrou** : s'il est déjà `REUSSI`, il s'arrête. Même chose si le webhook et la vérification
-du client arrivent à la même milliseconde. Cas voisin : si c'est **une autre facture** de la même
-demande qui est payée (le client a payé deux fois), elle passe `A_REMBOURSER` — aucun fonds
-bloqué, visible dans l'admin, remboursement manuel depuis PayDunya (aucune API de remboursement
-n'est utilisée).
+**Fichiers.** `services.py` (`marquer_paiement_reussi`, `_restaurer_solde_apres_echec_retrait`).
 
-**Fichiers.** `services.py` (`marquer_paiement_reussi`), `admin.py`, `tests.py`
-(`DoublePaiementEtCallbackTests`, `test_deux_callbacks_simultanes_un_seul_blocage`).
+### 10. Que se passe-t-il si le paiement reste PENDING ?
 
-### 10. « Que se passe-t-il si le serveur tombe après la création de la facture ? »
+**Réponse courte.** Il reste « en attente » : jamais considéré comme payé, et le client peut le
+reprendre ou le vérifier.
 
-**Réponse courte.** Rien n'est perdu : la facture et son token sont en base, le webhook et la
-vérification rattrapent le paiement ; et une tentative restée bloquée expire toute seule.
+**Explication.** Statut `EN_ATTENTE`. « Reprendre le paiement » redonne un lien pour la même facture ;
+« Vérifier mon paiement » interroge PayDunya. Une facture impayée passe `cancelled` au bout de 24 h
+chez PayDunya : le paiement devient `ECHOUE` et un nouveau paiement est possible.
 
-**Explication technique.** Deux moments :
-- **Pendant** l'appel à PayDunya : le paiement reste `INITIE`. Au-delà de
-  `PAYMENT_INITIE_TIMEOUT_MINUTES` (10 min par défaut, dans les settings), il est considéré comme
-  abandonné et passe `ECHOUE`, ce qui débloque une nouvelle tentative.
-- **Après** : le paiement est `EN_ATTENTE` avec son token et son URL enregistrés. Si le serveur est
-  arrêté au moment où PayDunya envoie le webhook, celui-ci est perdu, mais la vérification active (retour du client, bouton
-  « Vérifier mon paiement », ou nouveau clic « Payer ») interroge PayDunya et conclut.
-Point à connaître : il n'y a pas de tâche planifiée qui revérifie automatiquement les paiements en
-attente ; c'est une amélioration possible.
+**Fichiers.** `services.py` (`verifier_statut_paiement`, `_reprendre_paiement`).
 
-**Fichiers.** `services.py` (`_expirer_paiements_initie_abandonnes`, `verifier_statut_paiement`),
-`config/settings.py` (`PAYMENT_INITIE_TIMEOUT_MINUTES`).
+### 11. Que se passe-t-il si PayDunya est temporairement indisponible ?
 
-### 11. « Que se passe-t-il si le client revient sur MIMOSY sans avoir payé ? »
+**Réponse courte.** MIMOSY renvoie une vraie erreur claire et ne perd pas d'argent.
 
-**Réponse courte.** La page de retour interroge le backend, qui demande à PayDunya : tant que
-PayDunya ne dit pas « payé », MIMOSY affiche « en attente », jamais « réussi ».
+**Explication.** Le client HTTP transforme toute panne en `PayDunyaAPIError`. Paiement : `ECHOUE` avec
+message, le client réessaie. Retrait : `ECHOUE` et solde recrédité. Vérification : rien ne change
+(on ne devine jamais un statut). Un paiement bloqué en `INITIE` est abandonné après 10 minutes.
 
-**Explication technique.** Le paiement reste `EN_ATTENTE`. Le client voit « Reprendre le paiement »
-et retombe sur **la même facture PayDunya**. Si la facture a expiré (PayDunya la passe `cancelled`
-après 24 h), le paiement devient `ECHOUE` et un nouveau clic crée une nouvelle facture.
+**Fichiers.** `paydunya_client.py` (`_envoyer`), `providers/paydunya.py`.
 
-**Fichiers.** `PaiementRetour.vue`, `DetailsDemandes.vue`, `services.py`.
+### 12. Pourquoi utiliser PostgreSQL transactionnel pour le wallet ?
 
-### 12. « Comment protégez-vous les clés PayDunya ? »
+**Réponse courte.** Parce qu'un mouvement d'argent doit être « tout ou rien » et qu'il ne faut
+jamais que deux requêtes modifient le même solde en même temps.
 
-**Réponse courte.** Elles ne sont jamais dans le code ni dans Git : uniquement dans des variables
-d'environnement sur le serveur, et jamais envoyées au navigateur ni écrites dans les logs.
+**Explication.** `transaction.atomic()` : le solde et la ligne du journal (`Transaction`) sont écrits
+ensemble ou pas du tout. `select_for_update()` : un verrou de ligne oblige les requêtes concurrentes
+à attendre. Des contraintes SQL interdisent les soldes négatifs et les doubles paiements actifs.
 
-**Explication technique.** `settings.py` lit `PAYDUNYA_MASTER_KEY`, `PAYDUNYA_PRIVATE_KEY` et
-`PAYDUNYA_TOKEN` depuis l'environnement (`.env.docker`, ignoré par Git ; le dépôt ne contient que
-`.env.docker.example`, avec des valeurs vides). Elles ne voyagent que dans les en-têtes HTTP vers
-PayDunya. Le frontend ne les connaît pas : il ne parle qu'à notre API. Les logs n'écrivent que
-« token reçu : oui/non ». Des tests vérifient qu'aucune réponse d'API ni message d'erreur ne
-contient une clé. Sans clés, le client PayDunya refuse de démarrer au lieu d'appeler l'API à vide.
+**Fichiers.** `services.py`, `models.py` (`CheckConstraint`, `UniqueConstraint`).
 
-**Fichiers.** `config/settings.py`, `paydunya_client.py`, `.gitignore`, `tests.py`
-(`PayDunyaSecuriteTests`).
+### 13. Comment vérifiez-vous qu'un prestataire ne retire pas plus que son solde ?
 
-### 13. « Comment passez-vous du Sandbox à la production ? »
+**Réponse courte.** Le backend relit le solde sous verrou juste avant de débiter ; le montant affiché
+par le navigateur ne compte pas.
 
-**Réponse courte.** Sans toucher au code : on change des variables d'environnement sur le serveur
-— clés live, `PAYDUNYA_MODE=live`, et l'URL du webhook sur le vrai domaine HTTPS.
+**Explication.** `montant > 0`, montant entier, `montant ≤ solde_disponible` relu sous
+`select_for_update`, déduction dans la même transaction. Une contrainte SQL interdit en plus un solde
+négatif.
 
-**Explication technique.** `PayDunyaClient` choisit l'hôte selon `PAYDUNYA_MODE`
-(`…/sandbox-api/v1` en test, `…/api/v1` en live). En production : compte marchand activé, clés
-live, `PAYMENT_PROVIDER=paydunya`, `DEBUG=False`, `PAYDUNYA_CALLBACK_URL` et `ALLOWED_HOSTS` sur
-le domaine de production (plus de ngrok), puis un premier paiement réel de petit montant pour
-valider. `PAYDUNYA_MODE` vaut `test` par défaut : passer en réel est toujours une décision explicite.
+**Fichiers.** `services.py` (`initier_retrait`), `serializers.py` (`InitierRetraitSerializer`).
 
-**Fichiers.** `paydunya_client.py` (`PAYDUNYA_CHECKOUT_BASE_URL`), `config/settings.py`,
-`docs/paiement.md` (section L).
+### 14. Comment fonctionne le blocage des fonds ?
+
+**Réponse courte.** Quand le paiement est confirmé, l'argent va dans le `solde_bloque` du
+prestataire : il le voit, mais ne peut pas le retirer tant que la prestation n'est pas terminée.
+
+**Explication.** Wallet à trois soldes : bloqué, disponible, gelé (litige). Chaque mouvement laisse
+une ligne dans le journal `Transaction` (`BLOCAGE`, `LIBERATION`, `COMMISSION`, `RETRAIT`…).
+
+**Fichiers.** `models.py` (`Wallet`, `Transaction`), `docs/wallet.md`.
+
+### 15. À quel moment MIMOSY considère-t-il une prestation comme payée ?
+
+**Réponse courte.** Quand PayDunya a confirmé le paiement **et** que MIMOSY l'a vérifié — jamais
+quand le client revient simplement sur le site.
+
+**Explication.** `REUSSI` seulement après un webhook authentifié (hash) et cohérent (token, montant,
+demande, devise), **re-confirmé** auprès de PayDunya ; ou après la vérification active côté serveur.
+
+**Fichiers.** `services.py`, `PaiementRetour.vue` (interroge le backend).
+
+### 16. À quel moment la commission est-elle appliquée ?
+
+**Réponse courte.** Seulement quand la prestation est terminée par le parcours normal : on prélève
+**10 %** et on libère le reste au prestataire.
+
+**Explication.** `/terminer/` appelle `liberer_fonds_pour_prestation()` : `solde_bloque −= montant`,
+`solde_disponible += montant − commission`, transactions `COMMISSION` et `LIBERATION`. Le taux est
+configurable (`COMMISSION_TAUX`). (Un montant fixe de 2 000 FCFA a été envisagé ; la règle retenue
+reste 10 %.)
+
+**Fichiers.** `services.py` (`liberer_fonds_pour_prestation`), `config/settings.py`.
+
+### 17. Quelle différence entre SoftPay et Checkout classique ?
+
+**Réponse courte.** Checkout : on envoie le client sur une page PayDunya où il choisit son moyen.
+SoftPay : il choisit dans MIMOSY et va directement dans Wave ou Orange Money.
+
+**Explication.** Les deux reposent sur la même facture et le même webhook ; seule l'étape du
+milieu change. Checkout existe en sandbox, SoftPay seulement en live (compte vérifié).
+
+**Fichiers.** `providers/paydunya.py`, `paydunya_client.py`.
+
+### 18. Pourquoi avoir choisi Wave et Orange Money ?
+
+**Réponse courte.** Ce sont les deux moyens de paiement mobile les plus utilisés au Sénégal, où
+vivent nos clients et prestataires.
+
+**Explication.** L'architecture n'est pas limitée : PayDunya propose aussi Free Money, Expresso,
+Wizall, Djamo. Ajouter un moyen = une valeur dans `MoyenPaiement` et un appel SoftPay de plus.
+
+**Fichiers.** `models.py` (`Payment.MoyenPaiement`, `Withdrawal.MoyenRetrait`).
+
+### 19. Comment tester PayDunya en local avec ngrok ?
+
+**Réponse courte.** ngrok donne à mon backend local une adresse publique temporaire pour que
+PayDunya puisse lui envoyer le webhook.
+
+**Explication.** `ngrok http 8000` → `https://<id>.ngrok-free.dev` ; on met
+`…/api/wallet/webhooks/paydunya/` dans `PAYDUNYA_CALLBACK_URL` et le domaine dans `ALLOWED_HOSTS`,
+puis on recrée le backend. C'est ainsi que le paiement sandbox a été validé de bout en bout.
+
+**Fichiers.** `docs/paiement.md` (section J), `.env.docker` (non versionné).
+
+### 20. Comment passer de sandbox à production ?
+
+**Réponse courte.** Sans toucher au code : on fait valider le compte PayDunya (KYC), puis on change
+des variables d'environnement sur le serveur.
+
+**Explication.** `PAYDUNYA_MODE=live`, clés live, callbacks et domaine HTTPS de production, solde
+marchand approvisionné pour les retraits ; puis un premier paiement et un premier retrait de petit
+montant pour valider. `PAYDUNYA_MODE` vaut `test` par défaut : passer au réel est toujours un choix
+explicite.
+
+**Fichiers.** `paydunya_client.py`, `.env.docker.prod.example`, `docs/paiement.md` (section K).

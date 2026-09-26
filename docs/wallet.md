@@ -95,6 +95,26 @@ Callback PayDunya OU vérification active du statut
 REUSSI (rien à faire, le solde a déjà été déduit) ou ECHOUE (solde recrédité)
 ```
 
+### Ce que le backend vérifie avant d'appeler PayDunya
+
+- **Montant** : strictement positif, **entier** (la documentation PayDunya : « amount must not be a
+  decimal value » — sinon 1000,50 serait retiré du wallet mais 1000 envoyés), et ≤ solde disponible
+  **relu sous verrou**.
+- **Numéro** (`account_alias`) : normalisé par `normaliser_telephone_senegal()` en 9 chiffres sans
+  indicatif (format demandé par PayDunya), sinon refus immédiat — un numéro faux enverrait l'argent
+  ailleurs.
+- **Référence** : l'id du `Withdrawal` est transmis comme `disburse_id` à `submit-invoice`, pour
+  retrouver le retrait dans le tableau de bord PayDunya.
+- Une soumission annoncée `failed` par PayDunya est traitée comme un échec immédiat (solde
+  recrédité) ; la raison est renvoyée au prestataire (réponse 400 avec `detail`).
+
+**Mode test** : l'API de déboursement n'a pas de mode test. Avec des clés de test, PayDunya répond
+« LIVE Private Key and Token combination is invalid » : le retrait passe `ECHOUE`, le montant est
+recrédité, et le prestataire voit ce message. Les retraits ne sont donc testables qu'en live.
+
+**Interface** : `Wallet.vue` affiche le flux (formulaire, récapitulatif, résultat) dans une modal
+« Retirer mon argent » ; le solde affiché vient toujours du backend (rechargé après un refus).
+
 Le moyen de retrait choisi par le prestataire (`Withdrawal.MoyenRetrait` : `WAVE` ou
 `ORANGE_MONEY` — `SANDBOX` existe aussi sur le modèle mais n'est jamais proposé côté API réelle,
 voir `apps.wallet.serializers.MOYENS_RETRAIT_CLIENT`) est traduit vers le `withdraw_mode`
