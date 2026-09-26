@@ -469,6 +469,11 @@ def marquer_paiement_echoue(paiement: Payment) -> None:
 # Cette fonction applique ce que le fournisseur a CONFIRMÉ, après contrôle du token et du montant.
 def _appliquer_verification(paiement: Payment, verification: ResultatVerification) -> None:
     if verification.statut == STATUT_REUSSI:
+        # La confirmation doit concerner cette prestation et être en francs CFA.
+        erreur = _incoherence_facture(paiement, verification)
+        if erreur:
+            logger.warning("Paiement %s : confirmation ignorée (%s).", paiement.id, erreur)
+            return
         # Jamais de REUSSI si le fournisseur parle d'une autre facture ou d'un autre montant.
         if verification.reference_externe and verification.reference_externe != paiement.reference_externe:
             logger.warning("Paiement %s : le fournisseur confirme une autre facture, ignoré.", paiement.id)
@@ -480,6 +485,26 @@ def _appliquer_verification(paiement: Payment, verification: ResultatVerificatio
     elif verification.statut == STATUT_ECHOUE:
         marquer_paiement_echoue(paiement)
     # EN_ATTENTE ou INCONNU : on ne change rien, on ne devine jamais.
+
+
+# Devises acceptées pour un paiement MIMOSY (le franc CFA d'Afrique de l'Ouest).
+_DEVISES_ACCEPTEES = {"XOF", "FCFA"}
+
+
+# Cette fonction détecte une facture qui ne correspond pas à ce paiement (autre prestation, autre devise).
+def _incoherence_facture(paiement: Payment, verification: ResultatVerification) -> Optional[str]:
+    """
+    Contrôles complémentaires au token et au montant. Ils ne s'appliquent
+    que si le fournisseur envoie l'information (une ancienne facture peut
+    ne pas contenir demande_prestation_id ; la devise n'est pas toujours
+    présente) : on refuse ce qui est faux, on ne devine pas ce qui manque.
+    """
+
+    if verification.identifiant_demande and verification.identifiant_demande != str(paiement.demande_prestation_id):
+        return "la facture concerne une autre demande de prestation"
+    if verification.devise and str(verification.devise).upper() not in _DEVISES_ACCEPTEES:
+        return f"devise inattendue ({verification.devise})"
+    return None
 
 
 # Cette fonction interroge activement le fournisseur pour connaître le vrai statut d'un paiement.
@@ -547,6 +572,11 @@ def traiter_callback_paiement_paydunya(donnees: dict, hash_recu: str) -> Payment
             f"Callback PayDunya rejeté : montant reçu ({annonce.montant}) "
             f"différent du montant attendu ({paiement.montant})."
         )
+
+    # La facture doit concerner cette prestation, en francs CFA.
+    incoherence = _incoherence_facture(paiement, annonce)
+    if incoherence:
+        raise ErreurPaiement(f"Callback PayDunya rejeté : {incoherence}.")
 
     logger.info(
         "Callback PayDunya authentifié pour le paiement %s : statut annoncé=%s, statut MIMOSY avant=%s.",

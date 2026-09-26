@@ -85,7 +85,9 @@ class PayDunyaPaymentProvider(PaymentProvider):
             reponse = client.creer_facture_paiement(
                 montant=payment.montant,
                 description=f"MIMOSY - {demande.service.nom}",
-                custom_data={"payment_id": str(payment.id)},
+                # payment_id : retrouver le Payment au callback ; demande_prestation_id :
+                # vérifier au callback que la facture concerne bien cette prestation.
+                custom_data={"payment_id": str(payment.id), "demande_prestation_id": str(demande.id)},
                 callback_url=settings.PAYDUNYA_CALLBACK_URL,
                 return_url=f"{settings.FRONTEND_BASE_URL}/client/paiement/retour?payment_id={payment.id}",
                 cancel_url=f"{settings.FRONTEND_BASE_URL}/client/demandes/{demande.id}",
@@ -329,6 +331,8 @@ class PayDunyaPaymentProvider(PaymentProvider):
             montant=invoice.get("total_amount"),
             reference_externe=invoice.get("token"),
             identifiant_interne=custom_data.get("payment_id"),
+            identifiant_demande=custom_data.get("demande_prestation_id"),
+            devise=invoice.get("currency") or reponse.get("currency"),
         )
 
     # Cette méthode authentifie et lit le callback (IPN) de paiement PayDunya.
@@ -349,6 +353,8 @@ class PayDunyaPaymentProvider(PaymentProvider):
             # Repli sur un token à la racine, format utilisé par d'anciens tests.
             reference_externe=invoice.get("token") or donnees.get("token"),
             identifiant_interne=custom_data.get("payment_id"),
+            identifiant_demande=custom_data.get("demande_prestation_id"),
+            devise=invoice.get("currency") or donnees.get("currency"),
         )
 
     # Cette méthode demande à PayDunya l'état réel d'un déboursement.
