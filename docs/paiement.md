@@ -306,6 +306,29 @@ Parcours de test : client connecté sur une demande `ACCEPTEE` → « Payer » �
 `docker compose logs -f backend` (lignes `apps.wallet`) → « Paiement réussi » → admin : `Payment`
 `REUSSI`, `solde_bloque` = budget, une seule `Transaction` `BLOCAGE`.
 
+### Vérifier les clés sans rien créer
+
+Un appel à `checkout-invoice/confirm` avec un token inexistant ne crée rien chez PayDunya et
+distingue clairement les deux cas :
+
+```bash
+docker compose exec backend python manage.py shell -c "
+from apps.wallet.paydunya_client import PayDunyaClient
+r = PayDunyaClient().confirmer_facture_paiement('test_verification_inexistant')
+print(r.get('response_code'), r.get('response_text'))"
+```
+
+- `4004 No Transaction Found.` : PayDunya **accepte** les clés (il a cherché la facture) ;
+- `1001 Invalid Masterkey Specified` : clés refusées (voir « Dépannage »).
+
+### Vérifier la sécurité du webhook sur le serveur en marche
+
+Un callback forgé doit toujours être rejeté (réponse 200 avec un `detail`, aucune donnée
+modifiée) : mauvais `hash` → « hash invalide » ; `payment_id` inconnu ou mal formé → « Aucun
+paiement MIMOSY » ; paiement non confié à PayDunya → « n'a pas été confié à PayDunya » ; mauvais
+token ou montant → rejet explicite (couvert par `apps/wallet/tests.py`, qui exige un paiement
+`EN_ATTENTE`). Ne jamais afficher le hash valide : c'est l'empreinte de la Master Key.
+
 ## L. Passage Sandbox → production
 
 1. Compte marchand PayDunya **activé** en production ; récupérer les clés **live**.
@@ -324,7 +347,8 @@ Parcours de test : client connecté sur une demande `ACCEPTEE` → « Payer » �
 | Symptôme | Cause probable | Où regarder |
 |---|---|---|
 | Paiement immédiatement `REUSSI`, pas de redirection | `PAYMENT_PROVIDER` vaut encore `sandbox` | commande de la section J |
-| Paiement `ECHOUE` dès le clic, log « Invalid Masterkey Specified » (`1001`) | clés absentes, fausses ou de mauvais mode (test/live) | `.env.docker`, puis `docker compose up -d backend` |
+| Paiement `ECHOUE` dès le clic, log « Invalid Masterkey Specified » (`1001`) | clés absentes, fausses ou de mauvais mode (test/live) ; cas déjà rencontré : la **clé publique** (`test_public_…`) collée dans `PAYDUNYA_MASTER_KEY` — la Master Key est une clé distincte, et la clé publique n'est jamais utilisée par MIMOSY | `.env.docker`, puis `docker compose up -d backend` ; test sans effet : section « Vérifier les clés sans rien créer » |
+| Clés modifiées dans `.env.docker` mais aucun effet | le conteneur garde les variables lues à sa création | `docker compose up -d backend` (pas `restart`) |
 | Log « PayDunya n'est pas configuré » | une des trois clés est vide | idem |
 | Pas de redirection, statut `EN_ATTENTE` | `url_paiement` absente de la réponse (autre utilisateur, ou statut changé) | onglet Réseau du navigateur |
 | Aucun callback reçu | `PAYDUNYA_CALLBACK_URL` vide, ancienne URL ngrok, ngrok arrêté | http://127.0.0.1:4040, logs backend |
@@ -334,6 +358,8 @@ Parcours de test : client connecté sur une demande `ACCEPTEE` → « Payer » �
 | Log « callback de succès non confirmé par PayDunya » | PayDunya pas encore `completed` ou injoignable au moment du callback | le retour client / « Vérifier mon paiement » confirmera |
 | Retour affiche « Paiement en cours » indéfiniment | callback non reçu et PayDunya encore `pending` | bouton « Vérifier mon paiement » plus tard |
 | Paiement `A_REMBOURSER` | le client a payé deux factures pour la même demande | rembourser depuis le tableau de bord PayDunya |
+| `ngrok http 8000` : `ERR_NGROK_105`, « authtoken … does not look like a proper ngrok authtoken » | la configuration ngrok contient une valeur d'exemple au lieu du vrai authtoken | copier l'authtoken depuis le tableau de bord ngrok, puis `ngrok config add-authtoken <vrai token>` (enregistré dans `~/.config/ngrok/ngrok.yml`, hors du projet) |
+| Impossible de créer une demande pour tester le paiement | le prestataire n'a encore publié aucune offre de service | se connecter en prestataire et ajouter une offre, puis créer la demande côté client |
 
 Journaux utiles (`docker compose logs -f backend`, logger `apps.wallet`, jamais de secret) :
 
