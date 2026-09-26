@@ -219,6 +219,19 @@ class Payment(models.Model):
         # Le fournisseur réel de paiement.
         PAYDUNYA = "PAYDUNYA", "PayDunya"
 
+    # Cette sous-classe liste les moyens de paiement proposés au client.
+    class MoyenPaiement(models.TextChoices):
+        """
+        Moyen choisi par le client dans la modal de paiement. Mêmes codes
+        que Withdrawal.MoyenRetrait, pour que paiement et retrait parlent
+        la même langue. En live, il décide de l'endpoint SoftPay appelé
+        (voir apps.wallet.providers.paydunya) ; vide pour le fournisseur
+        sandbox, qui n'en a pas besoin.
+        """
+
+        WAVE = "WAVE", "Wave"
+        ORANGE_MONEY = "ORANGE_MONEY", "Orange Money"
+
     # Identifiant unique du paiement, généré automatiquement.
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -258,6 +271,9 @@ class Payment(models.Model):
     # facture au lieu d'en créer une seconde. Renvoyée uniquement au
     # propriétaire du paiement (voir PaymentSerializer).
     url_paiement = models.URLField(max_length=500, blank=True, default="")
+    # Le moyen choisi par le client (Wave ou Orange Money), mis à jour s'il
+    # reprend le paiement avec un autre moyen sur la même facture.
+    moyen_paiement = models.CharField(max_length=20, choices=MoyenPaiement.choices, blank=True, default="")
 
     # Empêche un double paiement pour la même intention de paiement
     # (ex. double clic, requête rejouée) : voir apps.wallet.services.
