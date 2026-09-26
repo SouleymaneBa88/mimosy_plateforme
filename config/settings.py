@@ -468,6 +468,10 @@ LITIGE_DELAI_REPRISE_HEURES = int(os.getenv("LITIGE_DELAI_REPRISE_HEURES", "24")
 LITIGE_REATTRIBUTION_PART_NOUVEAU = Decimal(os.getenv("LITIGE_REATTRIBUTION_PART_NOUVEAU", "0.75"))
 
 # Credentials PayDunya (voir apps.wallet.paydunya_client.PayDunyaClient).
+# Lus dans l'environnement (back_Mimosy/.env.docker avec Docker, .env
+# sinon ; ces deux fichiers sont ignorés par Git) : une clé écrite dans
+# le code resterait dans l'historique Git pour toujours et serait
+# partagée avec quiconque clone le dépôt.
 # Jamais de valeur par défaut réelle ici : en l'absence de ces trois
 # clés, PayDunyaClient refuse explicitement de s'instancier plutôt que
 # d'échouer silencieusement ou d'appeler l'API avec des clés vides.
