@@ -116,6 +116,10 @@ class ResultatVerification:
     reference_externe: Optional[str] = None
     # Notre propre identifiant, renvoyé par le fournisseur (ex. custom_data.payment_id).
     identifiant_interne: Optional[str] = None
+    # La demande de prestation annoncée par le fournisseur (custom_data.demande_prestation_id), si fournie.
+    identifiant_demande: Optional[str] = None
+    # La devise annoncée par le fournisseur, si elle figure dans la réponse.
+    devise: Optional[str] = None
 
 
 # Cette classe définit l'interface commune que tout fournisseur de paiement doit respecter.
