@@ -1,86 +1,110 @@
 # Paiement client — PayDunya
 
 Ce document explique comment un client MIMOSY paie une prestation, du clic sur « Payer » jusqu'au
-blocage des fonds dans le wallet du prestataire. Il s'adresse à un développeur qui découvre le code.
+blocage des fonds dans le wallet du prestataire. Il s'adresse à un développeur qui découvre le
+code. La suite (commission, libération, retrait du prestataire) est dans `docs/wallet.md`.
 
-> **État de validation** : le code est couvert par des tests automatisés où PayDunya est remplacé
-> par des réponses au format de la documentation officielle. Un appel réel à l'API sandbox de
-> PayDunya a confirmé l'hôte et le format des réponses d'erreur. **Le parcours complet avec un
-> compte marchand PayDunya (clés de test réelles, paiement réel en sandbox, callback reçu) reste à
-> valider** — voir « Tester en local avec ngrok ».
+> **État de validation.** Le code est couvert par des tests automatisés où PayDunya est remplacé
+> par des réponses au format de sa documentation officielle, y compris des tests de concurrence
+> réelle sur PostgreSQL. Un appel réel à l'API sandbox PayDunya (avec de fausses clés) a confirmé
+> l'hôte et le format des réponses d'erreur. **Le parcours complet avec un compte PayDunya (clés de
+> test réelles, page de paiement, paiement sandbox, callback reçu via ngrok) reste à valider** —
+> voir section K.
+
+## Vue d'ensemble
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Client (navigateur)
+    participant V as Vue (DetailsDemandes.vue)
+    participant D as Django (views → services)
+    participant P as Provider PayDunya<br/>+ PayDunyaClient
+    participant PD as PayDunya
+    participant W as Wallet prestataire
+
+    C->>V: clic « Payer »
+    V->>D: POST /api/wallet/mes-paiements/<br/>{demande_prestation, idempotency_key}
+    D->>D: verrou demande · Payment INITIE<br/>(montant = demande.budget)
+    D->>P: initier_paiement() (verrou relâché)
+    P->>PD: POST checkout-invoice/create
+    PD-->>P: {response_code "00", token, response_text = URL}
+    P-->>D: token + URL
+    D->>D: Payment EN_ATTENTE (token, url_paiement)
+    D-->>V: 201 {statut EN_ATTENTE, url_paiement}
+    V->>C: window.location.href = url_paiement
+    C->>PD: page de paiement PayDunya (Wave, Orange Money…)
+    PD->>D: POST /api/wallet/webhooks/paydunya/ (callback, via ngrok en local)
+    D->>P: lire_callback_paiement() : hash
+    D->>D: contrôle token + montant
+    D->>P: verifier_paiement() → GET checkout-invoice/confirm/{token}
+    P->>PD: confirm
+    PD-->>P: status "completed", montant
+    D->>W: solde_bloque += montant · 1 Transaction BLOCAGE · Payment REUSSI
+    PD-->>C: redirection vers /client/paiement/retour?payment_id=…
+    C->>V: PaiementRetour.vue
+    V->>D: GET /api/wallet/mes-paiements/{id}/statut/
+    D-->>V: statut REUSSI (vérifié côté serveur)
+```
 
 ---
 
-## 1. Architecture
+## A. Architecture
 
 Chaque couche a un seul rôle :
 
 ```text
-Vue (DetailsDemandes.vue)             affichage et navigation, jamais de montant, jamais de clé
+Vue (DetailsDemandes.vue, PaiementRetour.vue)   affichage et navigation — jamais de montant, jamais de clé
   ↓ walletService.payerDemande()
-POST /api/wallet/mes-paiements/
+API Django : apps/wallet/views.py               HTTP : authentification, format, code de réponse
   ↓
-apps/wallet/views.py                  HTTP : valide la requête, choisit le code de réponse
-  ↓
-apps/wallet/services.py               règles métier et financières (verrous, statuts, wallet)
+apps/wallet/services.py                         règles métier et financières (verrous, statuts, wallet)
   ↓ get_provider()
-apps/wallet/providers/                adaptation au fournisseur (PayDunya ou sandbox)
-  ↓ PayDunyaPaymentProvider
-apps/wallet/paydunya_client.py        appels HTTP bruts à l'API PayDunya (httpx)
+PaymentProvider (providers/base.py)             interface commune + statuts normalisés
+  ↓
+PayDunyaPaymentProvider (providers/paydunya.py) traduction PayDunya ⇄ MIMOSY, vérification du hash
+  ↓
+PayDunyaClient (paydunya_client.py)             appels HTTP bruts (httpx), clés dans les en-têtes
   ↓
 API PayDunya
 ```
 
-`services.py` ne connaît **que** l'interface `PaymentProvider` (`providers/base.py`) et ses statuts
-normalisés (`REUSSI`, `ECHOUE`, `EN_ATTENTE`, `INCONNU`). Il n'importe jamais `PayDunyaClient` et
-ne manipule jamais les chaînes PayDunya (`completed`, `cancelled`…) : c'est
-`providers/paydunya.py` qui les traduit. Changer de fournisseur ne toucherait que `providers/` et
-`paydunya_client.py`.
+`services.py` ne connaît **que** l'interface `PaymentProvider` et ses statuts normalisés
+(`REUSSI`, `ECHOUE`, `EN_ATTENTE`, `INCONNU`). Il n'importe jamais `PayDunyaClient` et ne
+manipule jamais les chaînes PayDunya (`completed`, `cancelled`…). Changer de fournisseur ne
+toucherait que `providers/` et `paydunya_client.py`.
 
-Méthodes d'un fournisseur :
-
-| Méthode | Rôle |
+| Méthode du provider | Rôle |
 |---|---|
 | `initier_paiement(payment)` | créer la facture, renvoyer token + URL de paiement |
 | `verifier_paiement(payment)` | demander l'état réel d'une facture (`checkout-invoice/confirm`) |
 | `lire_callback_paiement(donnees, hash)` | authentifier et lire un callback de paiement |
 | `initier_retrait` / `verifier_retrait` / `lire_callback_retrait` | idem pour les retraits |
 
-Deux fournisseurs existent, choisis par `PAYMENT_PROVIDER` :
+Deux fournisseurs, choisis par `PAYMENT_PROVIDER` :
 
-- `sandbox` (défaut) : paiement réussi immédiatement, aucune redirection, aucun appel externe ;
-- `paydunya` : redirection vers la vraie page de paiement PayDunya.
+- `sandbox` (défaut) : `SandboxProvider`, paiement réussi immédiatement, aucune redirection,
+  aucun appel externe — pour développer sans compte PayDunya ;
+- `paydunya` : `PayDunyaPaymentProvider`, redirection vers la vraie page PayDunya
+  (`PAYDUNYA_MODE=test` : sandbox PayDunya, argent fictif ; `live` : argent réel).
 
-## 2. Flux complet
+## B. Création du paiement
 
-```text
-Client clique « Payer »
-  → POST /api/wallet/mes-paiements/ {demande_prestation, idempotency_key}   (aucun montant)
-  → services.initier_paiement() : vérifie la demande, crée Payment INITIE (montant = budget)
-  → PayDunyaPaymentProvider → PayDunyaClient → POST checkout-invoice/create
-  → PayDunya répond {response_code "00", token, response_text = URL de paiement}
-  → Payment EN_ATTENTE, reference_externe = token, url_paiement = URL
-  → réponse API {id, statut "EN_ATTENTE", url_paiement}
-  → Vue : window.location.href = url_paiement        ← le client QUITTE MIMOSY ici
-  → page PayDunya : le client choisit Wave / Orange Money / …, saisit ses informations, valide
-  → PayDunya appelle POST /api/wallet/webhooks/paydunya/   (callback, serveur à serveur)
-  → MIMOSY vérifie hash, token, montant, PUIS redemande le statut à PayDunya (confirm)
-  → confirmé : Payment REUSSI, fonds bloqués (solde_bloque), une Transaction BLOCAGE
-  → PayDunya renvoie le navigateur vers /client/paiement/retour?payment_id=<id>
-  → PaiementRetour.vue appelle GET /api/wallet/mes-paiements/<id>/statut/ et affiche le résultat
-```
+`POST /api/wallet/mes-paiements/` avec `{demande_prestation, idempotency_key}` — **jamais de
+montant** : un champ `montant` envoyé par le frontend est ignoré.
 
-## 3. Création de la facture PayDunya
+`services.initier_paiement()` :
 
-`PayDunyaClient.creer_facture_paiement()` envoie à `checkout-invoice/create` :
+1. **Idempotence** : même `idempotency_key` → même paiement.
+2. **Hors verrou** : les `INITIE` trop anciens passent `ECHOUE` (section H) ; un `EN_ATTENTE`
+   existant est revérifié auprès de PayDunya (payé entre-temps ? facture expirée ?).
+3. **Sous verrou de la demande** : refus si déjà payée ou si la demande n'est pas `ACCEPTEE` ;
+   renvoi du paiement en cours s'il y en a un ; sinon création d'un `Payment` `INITIE` avec
+   `montant = demande.budget`.
+4. **Hors verrou** : `PayDunyaClient.creer_facture_paiement()` → `checkout-invoice/create` avec
+   `invoice.total_amount`, `custom_data.payment_id`, `callback_url`, `return_url`, `cancel_url`.
 
-- `invoice.total_amount` : `Payment.montant`, lui-même copié de `demande_prestation.budget`
-  (jamais d'un champ de la requête : un `montant` envoyé par le frontend est ignoré) ;
-- `custom_data.payment_id` : notre identifiant, que PayDunya renvoie dans le callback ;
-- `actions.callback_url` (`PAYDUNYA_CALLBACK_URL`), `return_url` et `cancel_url` (construites
-  depuis `FRONTEND_BASE_URL`).
-
-Réponse documentée par PayDunya en cas de succès :
+Réponse documentée par PayDunya :
 
 ```json
 {
@@ -92,52 +116,53 @@ Réponse documentée par PayDunya en cas de succès :
 ```
 
 `response_text` **est** l'URL de la page de paiement. Le provider exige un `token` et une URL en
-`https://`, sinon le paiement passe `ECHOUE` (le client peut réessayer). Si PayDunya est
-injoignable, `PayDunyaClient` lève `PayDunyaAPIError` et le paiement passe `ECHOUE` au lieu
-d'une erreur 500.
+`https://` ; sinon, ou si PayDunya est injoignable, le paiement passe `ECHOUE` (pas d'erreur 500)
+et le client peut réessayer. Sinon : `Payment` `EN_ATTENTE`, `reference_externe = token`,
+`url_paiement = URL`, réponse **201**.
 
-## 4. Redirection vers PayDunya
+## C. Redirection vers PayDunya
 
-- L'URL est enregistrée dans `Payment.url_paiement` (migration `0005`).
-- Elle est renvoyée par `PaymentSerializer.get_url_paiement` **uniquement** au client propriétaire
-  du paiement et **uniquement** tant que le paiement est `EN_ATTENTE` (jamais à un admin ni à un
-  autre utilisateur).
-- `DetailsDemandes.vue`, fonction `payer()` : `window.location.href = paiement.value.url_paiement`.
-  C'est une vraie navigation du navigateur (pas `router.push`, qui ne gère que les routes Vue, ni
-  une iframe) : MIMOSY est quitté, la page PayDunya s'affiche.
-- Aucune URL PayDunya n'est écrite en dur côté frontend ; aucune page MIMOSY n'imite PayDunya.
+- `DetailsDemandes.vue`, fonction `payer()` :
+  `if (statut === 'EN_ATTENTE' && url_paiement) window.location.href = url_paiement`.
+  C'est une vraie navigation : le navigateur **quitte MIMOSY** et affiche la page PayDunya. Pas de
+  `router.push` (réservé aux routes Vue), pas d'iframe, pas de page qui imite PayDunya. Sans URL,
+  aucune redirection.
+- L'URL est stockée dans `Payment.url_paiement` pour qu'un client qui revient (autre onglet,
+  navigateur fermé) **reprenne la même facture** (« Reprendre le paiement ») au lieu d'en créer
+  une seconde.
+- `PaymentSerializer.get_url_paiement` ne la renvoie **qu'au client propriétaire** et **tant que
+  le paiement est `EN_ATTENTE`** (jamais à un admin ni à un autre utilisateur).
+- Aucune URL PayDunya n'est écrite en dur côté frontend.
 
-## 5. Callback PayDunya
+## D. Webhook (callback PayDunya)
 
-`POST /api/wallet/webhooks/paydunya/` est public (PayDunya n'a pas de session MIMOSY) ; toute sa
-sécurité vient des contrôles. PayDunya envoie un formulaire `x-www-form-urlencoded` au format
-« tableau PHP » :
+`POST /api/wallet/webhooks/paydunya/` est **public** : ce sont les serveurs PayDunya qui
+l'appellent. Sa sécurité vient des contrôles, pas d'une authentification. Format documenté
+(formulaire « tableau PHP ») :
 
 ```text
 data[hash]=…&data[status]=completed&data[invoice][token]=test_…&data[invoice][total_amount]=42300
 &data[custom_data][payment_id]=<uuid>
 ```
 
-`views._deplier_champs_php()` reconstruit `{"hash": …, "invoice": {"token": …}, …}`. Ensuite
-`services.traiter_callback_paiement_paydunya()` :
+`views._deplier_champs_php()` reconstruit le dictionnaire, puis
+`services.traiter_callback_paiement_paydunya()` vérifie, dans l'ordre :
 
-1. **authenticité** — le provider compare `hash` au SHA-512 de la Master Key
-   (`hmac.compare_digest`) ; sinon rejet ;
-2. **paiement** — retrouvé par `custom_data.payment_id` ;
-3. **token** — `invoice.token` doit être présent et égal à `Payment.reference_externe` ;
-4. **montant** — `invoice.total_amount` doit être présent et égal à `Payment.montant` ;
-5. **confirmation** — pour un succès annoncé, MIMOSY **redemande le statut** à PayDunya
+1. **authenticité** : `hash` = SHA-512 de la Master Key (`hmac.compare_digest`, par le provider) ;
+2. **paiement** : retrouvé par `custom_data.payment_id` (notre propre identifiant) ;
+3. **token** : `invoice.token` présent et égal à `Payment.reference_externe` ;
+4. **montant** : `invoice.total_amount` présent et égal à `Payment.montant` ;
+5. **confirmation** : pour un succès annoncé, MIMOSY **redemande le statut** à PayDunya
    (`checkout-invoice/confirm/<token>`) et ne bloque les fonds que si PayDunya confirme
-   `completed` avec le bon montant. Si PayDunya est injoignable, le paiement reste `EN_ATTENTE` :
-   la vérification active le confirmera plus tard.
+   `completed` avec le bon montant.
 
-La vue répond toujours **200**, même en cas de rejet : une erreur HTTP ferait réessayer PayDunya
-sans jamais changer l'issue. Les rejets sont journalisés (sans hash, clé ni token).
+La vue répond **toujours 200**, même en cas de rejet : une erreur HTTP ferait réessayer PayDunya
+sans jamais changer l'issue. Chaque rejet est journalisé (sans hash, clé ni token).
 
-## 6. Vérification active
+## E. Vérification active
 
-Le retour du navigateur n'est **jamais** une preuve de paiement (le client peut revenir sans avoir
-payé). `GET /api/wallet/mes-paiements/<id>/statut/` (propriétaire uniquement) appelle
+Le retour du navigateur n'est **jamais** une preuve de paiement (le client peut revenir sans
+avoir payé). `GET /api/wallet/mes-paiements/<id>/statut/` (propriétaire uniquement) appelle
 `services.verifier_statut_paiement()`, qui interroge PayDunya via le provider :
 
 | PayDunya (`status`) | MIMOSY |
@@ -147,143 +172,186 @@ payé). `GET /api/wallet/mes-paiements/<id>/statut/` (propriétaire uniquement) 
 | `cancelled`, `failed` | `ECHOUE` |
 | statut inconnu, `response_code` ≠ `00`, erreur réseau | rien ne change |
 
-D'après la documentation PayDunya, une facture impayée passe d'elle-même `cancelled` après 24 h.
+Selon la documentation PayDunya, une facture impayée passe d'elle-même `cancelled` après 24 h.
 
-## 7. Retour frontend
+Côté frontend, `PaiementRetour.vue` extrait l'UUID de `payment_id` (PayDunya ajoute `?token=…` à
+`return_url`, ce qui peut donner `payment_id=<uuid>?token=…` ou `…&token=…`), puis interroge
+`/statut/` toutes les 4 s pendant 60 s tant que le paiement est `INITIE` ou `EN_ATTENTE`.
+« Paiement réussi » ne s'affiche que si **le backend** répond `REUSSI`.
 
-PayDunya ajoute `?token=…` à `return_url`, qui contient déjà `?payment_id=…`. `PaiementRetour.vue`
-extrait uniquement l'UUID de `payment_id`, quels que soient les paramètres ajoutés, puis interroge
-`/statut/` toutes les 4 s pendant 60 s tant que le paiement est `INITIE` ou `EN_ATTENTE`. États
-affichés : en cours, réussi, échoué, annulé, payé en double (`A_REMBOURSER`).
+## F. Wallet
 
-## 8. Wallet
+`services.marquer_paiement_reussi()` est le **seul** endroit qui bloque des fonds pour un
+paiement. Sous `transaction.atomic()`, il verrouille dans cet ordre — toujours le même, pour
+éviter les interblocages — la demande, le paiement, puis le wallet ; il relit le statut **sous
+verrou**, ajoute le montant à `solde_bloque` et crée **une** `Transaction` `BLOCAGE`. Un paiement
+déjà `REUSSI` ou `A_REMBOURSER` ne produit plus rien. La suite (commission, libération, retrait) :
+`docs/wallet.md`.
 
-`services.marquer_paiement_reussi()` est le **seul** endroit qui bloque des fonds pour un paiement.
-Sous `transaction.atomic()`, il verrouille dans cet ordre (toujours le même, pour éviter les
-interblocages) la demande, le paiement, puis le wallet ; il relit le statut du paiement **sous
-verrou**, ajoute le montant à `solde_bloque` et crée **une** Transaction `BLOCAGE`. Un paiement
-déjà `REUSSI` ou `A_REMBOURSER` ne produit plus rien. La libération (commission déduite) a lieu à
-la fin de la prestation (`liberer_fonds_pour_prestation`, voir `docs/wallet.md`).
+## G. Idempotence
 
-## 9. Idempotence
+| Répétition | Effet |
+|---|---|
+| même `idempotency_key` rejouée | même paiement (refus si la clé appartient à un autre client) |
+| même clé, deux requêtes simultanées | l'`IntegrityError` de la contrainte d'unicité est rattrapée : le paiement de la première est renvoyé, pas de 500 |
+| callback reçu deux fois | le second ne fait rien (statut relu sous verrou) |
+| callback + vérification en même temps | un seul blocage (verrous) |
 
-- `Payment.idempotency_key` est unique en base. Le frontend en génère une par clic.
-- Même clé rejouée → même paiement (et refus si la clé appartient à un autre client).
-- Deux requêtes simultanées avec la même clé → la contrainte d'unicité fait échouer la seconde,
-  l'`IntegrityError` est rattrapée et le paiement de la première est renvoyé (pas de 500).
-- La clé **ne suffit pas** contre deux onglets (deux clés différentes) : c'est le rôle du verrou et
-  de la contrainte « un seul paiement actif » (section suivante).
-- Callbacks et vérifications répétés : voir « Wallet » (relecture du statut sous verrou).
+La clé d'idempotence **ne suffit pas** contre deux onglets (deux clés différentes) : c'est le
+rôle de la section H.
 
-## 10. Concurrence : une seule facture par demande
+## H. Concurrence : une seule facture par demande
 
 Règle : au plus **un paiement actif** (`INITIE`, `EN_ATTENTE` ou `REUSSI`) par demande.
 
-| Situation | Réponse de `POST /mes-paiements/` |
-|---|---|
-| aucun paiement actif (ou seulement des `ECHOUE`) | nouveau paiement + nouvelle facture (201) |
-| `EN_ATTENTE` | le même paiement et la même `url_paiement` (200) → « Reprendre le paiement » |
-| `INITIE` récent | le même paiement, sans URL (200) → « Paiement en cours de préparation… » |
-| `REUSSI` | refus (400) |
+| Situation | Réponse de `POST /mes-paiements/` | Frontend |
+|---|---|---|
+| aucun paiement actif (ou seulement des `ECHOUE`) | nouveau paiement + nouvelle facture (201) | redirection |
+| `EN_ATTENTE` | le même paiement et la même `url_paiement` (200) | « Reprendre le paiement » |
+| `INITIE` récent | le même paiement, sans URL (200) | « Paiement en cours de préparation… » |
+| `REUSSI` | refus (400) | « Paiement réussi » |
 
-`initier_paiement()` procède en quatre étapes :
+- La décision est prise **sous verrou** (`select_for_update` sur la demande) et le `INITIE` est
+  écrit **avant** de relâcher ce verrou : une requête concurrente attend, puis le voit.
+- L'appel HTTP à PayDunya est fait **après** avoir relâché le verrou : PayDunya peut mettre
+  plusieurs secondes à répondre, on ne bloque jamais la base pendant ce temps.
+- Filet de sécurité SQL : la contrainte `un_seul_paiement_actif_par_demande` (index unique partiel
+  PostgreSQL) refuse un second paiement actif même si un futur code oubliait le verrou.
+- **Délai `INITIE`** : si un `INITIE` dure plus de `PAYMENT_INITIE_TIMEOUT_MINUTES` (défaut 10),
+  PayDunya n'a jamais répondu (serveur arrêté pendant l'appel…) : il passe `ECHOUE` au clic suivant,
+  ce qui autorise une nouvelle tentative. Une réponse tardive de PayDunya ne le « ressuscite » pas.
 
-1. idempotence (même clé → même paiement) ;
-2. **hors verrou** : les `INITIE` trop anciens passent `ECHOUE`, un `EN_ATTENTE` est revérifié
-   auprès de PayDunya (payé ? expiré ?) — ce sont des appels HTTP, jamais faits sous verrou ;
-3. **sous verrou** (`select_for_update` sur la demande) : relecture des paiements actifs, puis
-   refus, réutilisation ou création d'un paiement `INITIE`. Le `INITIE` est écrit **avant** de
-   relâcher le verrou, donc une requête concurrente, qui attendait ce verrou, le voit forcément ;
-4. **hors verrou** : appel à PayDunya, puis enregistrement du token et de l'URL. Cette mise à jour
-   ne s'applique que si le paiement est toujours `INITIE` (il a pu être déclaré abandonné entre-temps).
-
-Filet de sécurité SQL : la contrainte `un_seul_paiement_actif_par_demande` (index unique partiel
-PostgreSQL) refuse un second paiement actif même si un futur code oubliait le verrou ; l'erreur
-est rattrapée et le paiement existant renvoyé.
-
-## 11. `A_REMBOURSER` (paiement en double)
+## I. Remboursement manuel — `A_REMBOURSER`
 
 Si PayDunya confirme un paiement alors qu'un **autre** paiement de la même demande est déjà
 `REUSSI` (par exemple une ancienne facture payée malgré tout), ce paiement passe `A_REMBOURSER` :
 
-- aucun fonds bloqué, aucune Transaction, wallet inchangé ;
+- aucun fonds bloqué, aucune `Transaction`, wallet inchangé ;
 - réponse 200 au callback (pas de retries PayDunya) ;
 - journal de niveau ERROR ;
 - visible dans l'admin Django (filtre « Statut ») et dans la page admin Paiements du frontend.
 
-**Le remboursement est manuel** (depuis le tableau de bord PayDunya) : aucune API de remboursement
-PayDunya n'est utilisée dans ce projet. `A_REMBOURSER` diffère d'`ANNULE`, qui signifie que le
-paiement n'a pas abouti.
+**Le remboursement est manuel**, depuis le tableau de bord PayDunya : aucune API de
+remboursement PayDunya n'est utilisée dans ce projet. `A_REMBOURSER` diffère d'`ANNULE`, qui
+signifie que le paiement n'a pas abouti.
 
-Cas inverse : si c'est une tentative **non payée** (`INITIE`/`EN_ATTENTE`) qui coexiste avec le
-paiement confirmé, celle-ci passe `ECHOUE` et le paiement confirmé devient `REUSSI`.
+Cas inverse : si c'est une tentative **non payée** qui coexiste avec le paiement confirmé,
+celle-ci passe `ECHOUE` et le paiement confirmé devient `REUSSI`.
 
-## 12. Délai `INITIE`
+## J. Variables d'environnement
 
-`INITIE` = MIMOSY a créé le paiement mais attend encore la réponse de PayDunya. Si ce statut dure
-plus de `PAYMENT_INITIE_TIMEOUT_MINUTES` (settings, défaut 10, variable d'environnement du même
-nom), le paiement est considéré comme abandonné (serveur arrêté pendant l'appel, par exemple) et
-passe `ECHOUE` au prochain clic « Payer », ce qui autorise une nouvelle tentative.
+Dans `back_Mimosy/.env.docker` (Docker) ou `back_Mimosy/.env` (poste). **Ces deux fichiers sont
+ignorés par Git** ; les modèles versionnés sont `.env.docker.example` et `.env.example`, avec des
+valeurs vides.
 
-## 13. Configuration
-
-Dans `back_Mimosy/.env.docker` (Docker) ou `back_Mimosy/.env` (poste), jamais versionnés :
-
-```env
-PAYMENT_PROVIDER=paydunya          # ou sandbox
-PAYDUNYA_MODE=test                 # test = sandbox PayDunya ; live = argent réel
-PAYDUNYA_MASTER_KEY=…
-PAYDUNYA_PRIVATE_KEY=…
-PAYDUNYA_TOKEN=…
-PAYDUNYA_CALLBACK_URL=https://<url-publique>/api/wallet/webhooks/paydunya/
-PAYDUNYA_PAYOUT_CALLBACK_URL=https://<url-publique>/api/wallet/webhooks/paydunya-payout/
-FRONTEND_BASE_URL=http://localhost:5173
-PAYMENT_INITIE_TIMEOUT_MINUTES=10
-```
+| Variable (lue dans `config/settings.py`) | Rôle | Sandbox PayDunya |
+|---|---|---|
+| `PAYMENT_PROVIDER` | `sandbox` ou `paydunya` | `paydunya` |
+| `PAYDUNYA_MODE` | `test` (sandbox PayDunya) ou `live` | `test` |
+| `PAYDUNYA_MASTER_KEY`, `PAYDUNYA_PRIVATE_KEY`, `PAYDUNYA_TOKEN` | clés du compte PayDunya | clés **de test** |
+| `PAYDUNYA_CALLBACK_URL` | URL publique du webhook de paiement | URL ngrok (section K) |
+| `PAYDUNYA_PAYOUT_CALLBACK_URL` | URL publique du webhook de retrait | facultatif pour tester un paiement |
+| `ALLOWED_HOSTS` | domaines acceptés par Django | ajouter le domaine ngrok |
+| `FRONTEND_BASE_URL` | base de `return_url` / `cancel_url` | `http://localhost:5173` |
+| `PAYMENT_INITIE_TIMEOUT_MINUTES` | délai d'abandon d'un `INITIE` | `10` |
+| `COMMISSION_TAUX` | commission MIMOSY à la libération | `0.10` |
 
 Les noms de variables utilisent des **tirets bas** (`PAYDUNYA_MASTER_KEY`). Les tirets
-(`PAYDUNYA-MASTER-KEY`) sont les noms des **en-têtes HTTP** que `PayDunyaClient` envoie à PayDunya.
-Avec Docker, recréer le backend après modification : `docker compose up -d backend`.
+(`PAYDUNYA-MASTER-KEY`) sont les noms des **en-têtes HTTP** envoyés à PayDunya.
 
-Avec `PAYMENT_PROVIDER=sandbox`, aucune clé n'est nécessaire et le paiement réussit immédiatement.
+Avec Docker, les variables sont lues à la **création** du conteneur : après modification,
+`docker compose up -d backend` (un simple `restart` ne relit pas `.env.docker`).
 
-## 14. Tester en local avec ngrok
-
-- **Redirection** (navigateur → PayDunya) : fonctionne depuis `localhost` sans rien faire, c'est
-  le navigateur du client qui ouvre la page PayDunya.
-- **Retour** (PayDunya → navigateur → `http://localhost:5173/client/paiement/retour`) : fonctionne
-  aussi, c'est encore le navigateur qui revient.
-- **Callback** (serveurs PayDunya → MIMOSY) : les serveurs PayDunya **ne peuvent pas** joindre
-  `http://localhost:8000`. Il faut une URL publique temporaire :
+Vérifier sans afficher de secret :
 
 ```bash
-ngrok http 8000
-# → https://<id>.ngrok-free.app
+docker compose exec backend python manage.py shell -c "
+from django.conf import settings as s
+print(s.PAYMENT_PROVIDER, s.PAYDUNYA_MODE, bool(s.PAYDUNYA_MASTER_KEY), bool(s.PAYDUNYA_PRIVATE_KEY),
+      bool(s.PAYDUNYA_TOKEN), s.PAYDUNYA_CALLBACK_URL, s.ALLOWED_HOSTS)"
 ```
 
-Puis dans `.env.docker` :
+## K. Développement local avec ngrok
+
+- **Redirection** (navigateur → PayDunya) et **retour** (PayDunya → navigateur → `localhost:5173`)
+  fonctionnent sans rien faire : c'est le navigateur du client qui se déplace.
+- **Callback** (serveurs PayDunya → MIMOSY) : les serveurs PayDunya **ne peuvent pas** joindre
+  `http://localhost:8000`. ngrok ouvre une URL publique temporaire vers le backend local.
+
+```bash
+ngrok http 8000                  # → Forwarding https://<id>.ngrok-free.app -> http://localhost:8000
+```
+
+Dans `back_Mimosy/.env.docker` :
 
 ```env
 PAYDUNYA_CALLBACK_URL=https://<id>.ngrok-free.app/api/wallet/webhooks/paydunya/
 ALLOWED_HOSTS=localhost,127.0.0.1,<id>.ngrok-free.app
 ```
 
-Sans ngrok, le callback n'arrive jamais ; la vérification active (page de retour, bouton
-« Vérifier mon paiement ») confirme quand même le paiement.
+Puis `docker compose up -d backend`, et contrôle :
 
-Procédure de test : `PAYMENT_PROVIDER=paydunya` et clés **de test** → `docker compose up -d` →
-client connecté sur une demande `ACCEPTEE` → « Payer » → la réponse réseau contient `url_paiement`
-en `https://app.paydunya.com/sandbox-checkout/invoice/…` → la page PayDunya s'affiche → payer avec
-un compte client de test PayDunya → `docker compose logs -f backend` montre le callback → retour
-« Paiement réussi » → admin : `Payment` `REUSSI`, `solde_bloque` égal au budget, une seule
-Transaction `BLOCAGE`.
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://<id>.ngrok-free.app/api/wallet/webhooks/paydunya/
+# 200 attendu (callback vide rejeté proprement) ; 400 = domaine absent d'ALLOWED_HOSTS
+```
 
-## 15. Sécurité
+L'interface locale de ngrok (http://127.0.0.1:4040) montre chaque requête reçue, dont les
+callbacks PayDunya. Avec le plan gratuit, le domaine change à chaque lancement de ngrok : mettre à
+jour les deux variables et recréer le backend.
 
-- Clés PayDunya : uniquement des variables d'environnement, lues par `PayDunyaClient` ; jamais dans
-  le code, le frontend, les logs ni les réponses API (tests dédiés dans `apps/wallet/tests.py`).
+Parcours de test : client connecté sur une demande `ACCEPTEE` → « Payer » → réponse
+`POST /mes-paiements/` avec `url_paiement` en `https://app.paydunya.com/sandbox-checkout/invoice/…`
+→ la page PayDunya s'affiche → payer avec un moyen de test **fourni par PayDunya** → logs
+`docker compose logs -f backend` (lignes `apps.wallet`) → « Paiement réussi » → admin : `Payment`
+`REUSSI`, `solde_bloque` = budget, une seule `Transaction` `BLOCAGE`.
+
+## L. Passage Sandbox → production
+
+1. Compte marchand PayDunya **activé** en production ; récupérer les clés **live**.
+2. Sur le serveur uniquement (jamais dans Git) : `PAYMENT_PROVIDER=paydunya`,
+   `PAYDUNYA_MODE=live`, clés live, `DEBUG=False`.
+3. `PAYDUNYA_CALLBACK_URL` / `PAYDUNYA_PAYOUT_CALLBACK_URL` sur le **domaine HTTPS de production**
+   (plus de ngrok) ; `ALLOWED_HOSTS` et `FRONTEND_BASE_URL` sur ce domaine.
+4. `PayDunyaClient` bascule alors de `…/sandbox-api/v1` vers `…/api/v1` (aucun changement de code).
+5. Premier paiement réel d'un petit montant, puis vérification : callback reçu, `REUSSI`,
+   `solde_bloque`, une seule `BLOCAGE`.
+6. Retraits : la documentation PayDunya ne décrit pas d'hôte de test distinct pour le
+   déboursement (voir `docs/wallet.md`) — tester avec un petit montant réel.
+
+## M. Dépannage
+
+| Symptôme | Cause probable | Où regarder |
+|---|---|---|
+| Paiement immédiatement `REUSSI`, pas de redirection | `PAYMENT_PROVIDER` vaut encore `sandbox` | commande de la section J |
+| Paiement `ECHOUE` dès le clic, log « Invalid Masterkey Specified » (`1001`) | clés absentes, fausses ou de mauvais mode (test/live) | `.env.docker`, puis `docker compose up -d backend` |
+| Log « PayDunya n'est pas configuré » | une des trois clés est vide | idem |
+| Pas de redirection, statut `EN_ATTENTE` | `url_paiement` absente de la réponse (autre utilisateur, ou statut changé) | onglet Réseau du navigateur |
+| Aucun callback reçu | `PAYDUNYA_CALLBACK_URL` vide, ancienne URL ngrok, ngrok arrêté | http://127.0.0.1:4040, logs backend |
+| Callback en **400** | domaine ngrok absent d'`ALLOWED_HOSTS` | `.env.docker` |
+| Log « Callback PayDunya rejeté : hash invalide » | Master Key du serveur ≠ celle du compte qui a créé la facture | clés et mode |
+| Log « rejeté : token absent… » ou « montant reçu … différent » | callback d'une autre facture, ou montant modifié | ne pas contourner : c'est la protection |
+| Log « callback de succès non confirmé par PayDunya » | PayDunya pas encore `completed` ou injoignable au moment du callback | le retour client / « Vérifier mon paiement » confirmera |
+| Retour affiche « Paiement en cours » indéfiniment | callback non reçu et PayDunya encore `pending` | bouton « Vérifier mon paiement » plus tard |
+| Paiement `A_REMBOURSER` | le client a payé deux factures pour la même demande | rembourser depuis le tableau de bord PayDunya |
+
+Journaux utiles (`docker compose logs -f backend`, logger `apps.wallet`, jamais de secret) :
+
+```text
+INFO  … Paiement <id> créé (demande …, montant …, fournisseur PAYDUNYA).
+INFO  … Facture PayDunya créée pour le paiement <id> : response_code=00, token reçu : oui, URL de paiement reçue : oui.
+INFO  … Callback PayDunya reçu : champs … champs data[...]
+INFO  … Callback PayDunya authentifié pour le paiement <id> : statut annoncé=REUSSI …   (hash, token, montant OK)
+INFO  … Vérification PayDunya du paiement <id> : statut PayDunya=completed.
+INFO  … Callback PayDunya accepté : paiement <id> → statut REUSSI
+```
+
+## Sécurité — récapitulatif
+
+- Clés PayDunya : uniquement des variables d'environnement, lues par `PayDunyaClient` ; jamais
+  dans le code, le frontend, les logs ni les réponses API (tests dédiés dans `apps/wallet/tests.py`).
 - Montant : toujours `demande_prestation.budget`, jamais la requête.
 - Un client ne voit et ne vérifie que ses propres paiements ; `url_paiement` n'est renvoyée qu'à lui.
-- Un client ne peut pas déclarer un paiement réussi : seuls le callback authentifié **et** confirmé,
-  ou la vérification active côté serveur, font passer un paiement `REUSSI`.
+- Un client ne peut pas déclarer un paiement réussi : seuls le callback authentifié **et**
+  confirmé, ou la vérification active côté serveur, font passer un paiement `REUSSI`.
 - Toute écriture de solde est atomique et verrouillée ; callbacks et vérifications sont idempotents.
