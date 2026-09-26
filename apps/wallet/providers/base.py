@@ -41,8 +41,12 @@ class ResultatProvider:
         - reussi=False, en_attente=False : échec immédiat et définitif.
 
     `url_paiement` n'a de sens que pour un paiement en_attente : c'est
-    l'URL de checkout vers laquelle rediriger le client (jamais stockée
-    sur le modèle Payment, seulement renvoyée une fois à la création).
+    l'adresse où envoyer le navigateur du client (lien Wave, page QR
+    Orange Money, ou checkout PayDunya en mode test). Elle est enregistrée
+    dans Payment.url_paiement pour permettre la reprise du paiement.
+
+    `liens_alternatifs` : liens supplémentaires éventuels renvoyés par le
+    fournisseur (Orange Money : application Orange Money, Max it).
     """
 
     # Indique si l'opération a réellement réussi (seulement possible avec sandbox).
@@ -55,6 +59,25 @@ class ResultatProvider:
     en_attente: bool = False
     # L'URL de paiement à laquelle rediriger le client, si applicable.
     url_paiement: Optional[str] = None
+    # Liens supplémentaires éventuels (ex. {"om_url": ..., "maxit_url": ...}).
+    liens_alternatifs: Optional[dict] = None
+
+
+# Cette structure regroupe ce qu'il faut savoir du payeur pour un paiement mobile.
+@dataclass
+class DetailsPayeur:
+    """
+    Informations transmises au fournisseur pour un paiement mobile money
+    (SoftPay). `moyen` vaut Payment.MoyenPaiement (WAVE / ORANGE_MONEY) ;
+    `telephone` est le numéro du compte Wave ou Orange Money du client,
+    9 chiffres sans indicatif (déjà validé par InitierPaiementSerializer).
+    Jamais de montant ici : le montant vient toujours du Payment.
+    """
+
+    moyen: str
+    telephone: str
+    nom: str
+    email: str
 
 
 # Statuts NORMALISÉS renvoyés par un fournisseur. Chaque fournisseur
@@ -100,8 +123,22 @@ class PaymentProvider:
     """Interface commune. Ne jamais instancier directement."""
 
     # Cette méthode doit initier un paiement chez le fournisseur.
-    def initier_paiement(self, payment) -> ResultatProvider:
+    def initier_paiement(self, payment, payeur: Optional["DetailsPayeur"] = None) -> ResultatProvider:
         raise NotImplementedError
+
+    # Cette méthode relance le paiement d'une facture déjà créée (reprise, changement de moyen).
+    def relancer_paiement(self, payment, payeur: "DetailsPayeur") -> ResultatProvider:
+        """
+        Par défaut : rien de nouveau, on renvoie l'adresse déjà enregistrée.
+        Un fournisseur qui sait relancer un paiement sur la même facture
+        (PayDunya SoftPay) redéfinit cette méthode.
+        """
+        return ResultatProvider(
+            reussi=False,
+            en_attente=True,
+            reference_externe=payment.reference_externe,
+            url_paiement=payment.url_paiement,
+        )
 
     # Cette méthode doit initier un retrait chez le fournisseur.
     def initier_retrait(self, withdrawal) -> ResultatProvider:

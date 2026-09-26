@@ -60,6 +60,14 @@ PAYDUNYA_CHECKOUT_BASE_URL = {
 # L'adresse de base de l'API PayDunya pour le déboursement.
 PAYDUNYA_DISBURSE_BASE_URL = "https://app.paydunya.com/api/v2"
 
+# SoftPay (paiement mobile money sans passer par la page checkout) : la
+# documentation (section FR "softpay") ne documente que l'hôte LIVE.
+# Vérifié le 26/09/2026 : .../sandbox-api/v1/softpay/... répond 404, et
+# .../api/v1/softpay/... exige un compte marchand PayDunya dont le KYC est
+# validé. SoftPay n'est donc appelé qu'en PAYDUNYA_MODE=live (voir
+# apps.wallet.providers.paydunya) ; en test, la facture ouvre le checkout sandbox.
+PAYDUNYA_SOFTPAY_BASE_URL = "https://app.paydunya.com/api/v1/softpay"
+
 # Le nom du mode de retrait PayDunya pour Wave Sénégal.
 WITHDRAW_MODE_WAVE_SENEGAL = "wave-senegal"
 # Le nom du mode de retrait PayDunya pour Orange Money Sénégal.
@@ -189,6 +197,44 @@ class PayDunyaClient:
 
         base_url = PAYDUNYA_CHECKOUT_BASE_URL[self.mode]
         return self._get(f"{base_url}/checkout-invoice/confirm/{token}")
+
+    # ------------------------------------------------------------------
+    # SoftPay (paiement Wave / Orange Money d'une facture déjà créée)
+    # ------------------------------------------------------------------
+
+    # Cette méthode demande à PayDunya un lien de paiement Wave pour une facture.
+    def payer_softpay_wave(self, invoice_token: str, nom: str, email: str, telephone: str) -> dict:
+        """
+        POST /softpay/wave-senegal. Réponse documentée en cas de succès :
+        {"success": true, "message": ..., "url": "https://pay.wave.com/...",
+        "fees": ..., "currency": "XOF"}. `success: true` signifie seulement
+        « lien Wave créé » : le paiement n'est PAS encore fait.
+        """
+
+        payload = {
+            "wave_senegal_fullName": nom,
+            "wave_senegal_email": email,
+            "wave_senegal_phone": telephone,
+            "wave_senegal_payment_token": invoice_token,
+        }
+        return self._post(f"{PAYDUNYA_SOFTPAY_BASE_URL}/wave-senegal", payload)
+
+    # Cette méthode demande à PayDunya un paiement Orange Money (QR code / applications) pour une facture.
+    def payer_softpay_orange_money(self, invoice_token: str, nom: str, email: str, telephone: str) -> dict:
+        """
+        POST /softpay/new-orange-money-senegal. Réponse documentée :
+        {"success": true, "url": <page QR code>, "other_url": {"om_url": ...,
+        "maxit_url": ...}, "fees": ..., "currency": "XOF"}. Là encore, rien
+        n'est payé tant que le client n'a pas validé dans Orange Money.
+        """
+
+        payload = {
+            "customer_name": nom,
+            "customer_email": email,
+            "phone_number": telephone,
+            "invoice_token": invoice_token,
+        }
+        return self._post(f"{PAYDUNYA_SOFTPAY_BASE_URL}/new-orange-money-senegal", payload)
 
     # ------------------------------------------------------------------
     # Déboursement (payout)
