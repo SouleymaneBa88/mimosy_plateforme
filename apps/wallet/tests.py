@@ -118,7 +118,7 @@ class InitierPaiementTests(WalletTestCase):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
             url,
-            {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-http", "montant": "1"},
+            {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-http", "montant": "1", "moyen_paiement": "WAVE", "telephone": "771234567"},
             format="json",
         )
 
@@ -213,7 +213,7 @@ class InitierPaiementTests(WalletTestCase):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.post(
             reverse("mes-paiements"),
-            {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-e"},
+            {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-e", "moyen_paiement": "WAVE", "telephone": "771234567"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -445,7 +445,7 @@ class PayDunyaPaiementTests(WalletTestCase):
             self.client.force_authenticate(user=self.client_user)
             response = self.client.post(
                 url,
-                {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-http-paydunya", "montant": "1"},
+                {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-http-paydunya", "montant": "1", "moyen_paiement": "WAVE", "telephone": "771234567"},
                 format="json",
             )
 
@@ -897,7 +897,7 @@ class PayDunyaSecuriteTests(WalletTestCase):
             self.client.force_authenticate(user=self.client_user)
             response = self.client.post(
                 reverse("mes-paiements"),
-                {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-secu-reponse"},
+                {"demande_prestation": str(self.demande.id), "idempotency_key": "clef-secu-reponse", "moyen_paiement": "WAVE", "telephone": "771234567"},
                 format="json",
             )
 
@@ -1036,7 +1036,7 @@ class RepriseFactureTests(WalletTestCase):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
             reverse("mes-paiements"),
-            {"demande_prestation": str(self.demande.id), "idempotency_key": "cle-api"},
+            {"demande_prestation": str(self.demande.id), "idempotency_key": "cle-api", "moyen_paiement": "WAVE", "telephone": "771234567"},
             format="json",
         )
 
@@ -1058,7 +1058,7 @@ class RepriseFactureTests(WalletTestCase):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
             reverse("mes-paiements"),
-            {"demande_prestation": str(self.demande.id), "idempotency_key": "cle-reprise-2"},
+            {"demande_prestation": str(self.demande.id), "idempotency_key": "cle-reprise-2", "moyen_paiement": "WAVE", "telephone": "771234567"},
             format="json",
         )
 
@@ -1383,7 +1383,7 @@ class SandboxToujoursFonctionnelTests(WalletTestCase):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
             reverse("mes-paiements"),
-            {"demande_prestation": str(self.demande.id), "idempotency_key": "cle-sandbox"},
+            {"demande_prestation": str(self.demande.id), "idempotency_key": "cle-sandbox", "moyen_paiement": "WAVE", "telephone": "771234567"},
             format="json",
         )
 
@@ -1532,3 +1532,355 @@ class ConcurrenceReelleTests(TransactionTestCase):
 
         self.assertEqual(paiement.demande_prestation_id, autre_demande.id)
         self.assertEqual(Payment.objects.filter(idempotency_key="cle-disputee").count(), 1)
+
+
+# ======================================================================
+# SoftPay (Wave / Orange Money), modal de paiement, retrait PayDunya
+# (voir docs/paiement.md). Aucun appel réseau : PayDunyaClient est
+# remplacé par des réponses au FORMAT de la documentation officielle.
+# ======================================================================
+
+PAYDUNYA_LIVE = dict(PAYDUNYA_SETTINGS, PAYDUNYA_MODE="live")
+URL_WAVE = "https://pay.wave.com/c/cos-test?a=10000&c=XOF"
+URL_OM = "https://app.paydunya.com/recharge-orange-sn?data[qrcode]=test"
+
+
+class _SoftPayFactice:
+    """Facture + SoftPay au format documenté ; chaque facture a un token unique."""
+
+    def __init__(self, test):
+        patcheur = patch("apps.wallet.providers.paydunya.PayDunyaClient")
+        self.client_cls = patcheur.start()
+        test.addCleanup(patcheur.stop)
+        self.instance = self.client_cls.return_value
+        self.factures = 0
+
+        def creer(**kwargs):
+            self.factures += 1
+            self.dernier_custom_data = kwargs["custom_data"]
+            token = f"live_tok{self.factures}"
+            return {"response_code": "00", "response_text": f"https://app.paydunya.com/checkout/invoice/{token}", "token": token}
+
+        self.instance.creer_facture_paiement.side_effect = creer
+        self.instance.payer_softpay_wave.return_value = {
+            "success": True, "message": "Rediriger vers cette URL pour completer le paiement.",
+            "url": URL_WAVE, "fees": 100, "currency": "XOF",
+        }
+        self.instance.payer_softpay_orange_money.return_value = {
+            "success": True, "message": "Rediriger vers cette URL pour completer le paiement.", "url": URL_OM,
+            "other_url": {"om_url": "https://orangemoneysn.page.link/test", "maxit_url": "https://sugu.orange-sonatel.com/test"},
+            "fees": 100, "currency": "XOF",
+        }
+        self.instance.verifier_hash.side_effect = lambda recu: recu == HASH_VALIDE
+
+
+class ModalPaiementApiMixin:
+    def payer(self, moyen="WAVE", telephone="77 123 45 67", cle="cle-modal", **extra):
+        self.client.force_authenticate(user=self.client_user)
+        return self.client.post(
+            reverse("mes-paiements"),
+            {"demande_prestation": str(self.demande.id), "idempotency_key": cle, "moyen_paiement": moyen, "telephone": telephone, **extra},
+            format="json",
+        )
+
+
+@override_settings(**PAYDUNYA_LIVE)
+class SoftPayLiveTests(ModalPaiementApiMixin, WalletTestCase):
+    def setUp(self):
+        super().setUp()
+        self.paydunya = _SoftPayFactice(self)
+
+    def test_wave_cree_la_facture_puis_le_lien_wave(self):
+        response = self.payer("WAVE", "+221 77 123 45 67")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["statut"], Payment.Statut.EN_ATTENTE)
+        self.assertEqual(response.data["url_paiement"], URL_WAVE)
+        self.assertEqual(response.data["moyen_paiement"], "WAVE")
+        # Nom et e-mail viennent du compte connecté ; numéro normalisé sans indicatif.
+        self.paydunya.instance.payer_softpay_wave.assert_called_once_with(
+            "live_tok1", "Coumba Gueye", "wallet-client@test.com", "771234567"
+        )
+        self.paydunya.instance.payer_softpay_orange_money.assert_not_called()
+        paiement = Payment.objects.get()
+        self.assertEqual((paiement.url_paiement, paiement.reference_externe), (URL_WAVE, "live_tok1"))
+
+    def test_orange_money_renvoie_le_qr_code_et_les_liens_applications(self):
+        response = self.payer("ORANGE_MONEY", "78 123 45 67")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["url_paiement"], URL_OM)
+        self.assertEqual(set(response.data["liens_paiement"]), {"om_url", "maxit_url"})
+        self.paydunya.instance.payer_softpay_orange_money.assert_called_once_with(
+            "live_tok1", "Coumba Gueye", "wallet-client@test.com", "781234567"
+        )
+
+    def test_la_facture_porte_la_demande_pour_le_controle_au_callback(self):
+        self.payer()
+        self.assertEqual(self.paydunya.dernier_custom_data["demande_prestation_id"], str(self.demande.id))
+
+    def test_success_true_ne_rend_jamais_le_paiement_reussi(self):
+        self.payer()
+        self.assertEqual(Payment.objects.get().statut, Payment.Statut.EN_ATTENTE)
+        self.assertFalse(Wallet.objects.filter(prestataire=self.profil).exists())
+
+    def test_refus_kyc_de_paydunya_donne_une_erreur_explicite(self):
+        self.paydunya.instance.payer_softpay_wave.return_value = {
+            "response_code": "1001",
+            "response_text": "Vous devez valider vos informations de KYC avant d'avoir accès au service.",
+        }
+        response = self.payer()
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("KYC", response.data["detail"])
+        paiement = Payment.objects.get()
+        self.assertEqual(paiement.statut, Payment.Statut.ECHOUE)
+        self.assertEqual(paiement.reference_externe, "live_tok1")  # rapprochable si payé malgré tout
+
+    def test_softpay_injoignable_donne_une_erreur_explicite(self):
+        self.paydunya.instance.payer_softpay_wave.side_effect = PayDunyaAPIError("PayDunya injoignable (ConnectError).")
+        response = self.payer()
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("injoignable", response.data["detail"])
+        self.assertEqual(Payment.objects.get().statut, Payment.Statut.ECHOUE)
+
+    def test_reprise_avec_un_autre_moyen_relance_softpay_sur_la_meme_facture(self):
+        premier = self.payer("WAVE", cle="cle-1")
+        second = self.payer("ORANGE_MONEY", cle="cle-2")
+
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data["id"], premier.data["id"])
+        self.assertEqual(self.paydunya.factures, 1)  # jamais de seconde facture
+        self.paydunya.instance.payer_softpay_orange_money.assert_called_once_with(
+            "live_tok1", "Coumba Gueye", "wallet-client@test.com", "771234567"
+        )
+        paiement = Payment.objects.get()
+        self.assertEqual((paiement.moyen_paiement, paiement.url_paiement), ("ORANGE_MONEY", URL_OM))
+
+    def test_relance_refusee_garde_la_facture_en_attente(self):
+        self.payer("WAVE", cle="cle-1")
+        self.paydunya.instance.payer_softpay_orange_money.return_value = {"success": False, "message": "Numéro Orange Money invalide."}
+        response = self.payer("ORANGE_MONEY", cle="cle-2")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Numéro Orange Money invalide.")
+        paiement = Payment.objects.get()
+        self.assertEqual((paiement.statut, paiement.url_paiement), (Payment.Statut.EN_ATTENTE, URL_WAVE))
+
+    def test_moyen_de_paiement_obligatoire_et_limite(self):
+        self.client.force_authenticate(user=self.client_user)
+        sans_moyen = self.client.post(reverse("mes-paiements"), {"demande_prestation": str(self.demande.id), "idempotency_key": "k", "telephone": "771234567"}, format="json")
+        moyen_inconnu = self.payer("PAYPAL")
+        self.assertEqual(sans_moyen.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(moyen_inconnu.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Payment.objects.count(), 0)
+
+    def test_numero_invalide_refuse_avant_tout_appel_paydunya(self):
+        response = self.payer(telephone="12345")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.paydunya.factures, 0)
+
+    def test_montant_envoye_par_le_navigateur_ignore_avec_softpay(self):
+        response = self.payer(montant="1")
+        self.assertEqual(response.data["montant"], "10000.00")
+        self.assertEqual(self.paydunya.instance.creer_facture_paiement.call_args.kwargs["montant"], Decimal("10000.00"))
+
+
+@override_settings(**PAYDUNYA_SETTINGS)
+class SoftPayModeTestTests(ModalPaiementApiMixin, WalletTestCase):
+    def test_en_mode_test_la_facture_ouvre_le_checkout_sandbox_sans_softpay(self):
+        paydunya = _SoftPayFactice(self)
+        response = self.payer("ORANGE_MONEY")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["url_paiement"], "https://app.paydunya.com/checkout/invoice/live_tok1")
+        self.assertEqual(response.data["moyen_paiement"], "ORANGE_MONEY")
+        paydunya.instance.payer_softpay_wave.assert_not_called()
+        paydunya.instance.payer_softpay_orange_money.assert_not_called()
+
+
+class NormalisationTelephoneTests(APITestCase):
+    def test_formats_acceptes(self):
+        from .serializers import normaliser_telephone_senegal
+
+        for saisie in ["771234567", "77 123 45 67", "77.123.45.67", "77-123-45-67", "+221771234567", "+221 77 123 45 67", "00221771234567", "221771234567"]:
+            self.assertEqual(normaliser_telephone_senegal(saisie), "771234567", saisie)
+
+    def test_formats_refuses(self):
+        from rest_framework.exceptions import ValidationError
+
+        from .serializers import normaliser_telephone_senegal
+
+        for saisie in ["", "7712345", "7712345678", "661234567", "331234567", "+33612345678", "abcdefghi"]:
+            with self.assertRaises(ValidationError, msg=saisie):
+                normaliser_telephone_senegal(saisie)
+
+
+@override_settings(**PAYDUNYA_SETTINGS)
+class CallbackCoherenceFactureTests(WalletTestCase):
+    def setUp(self):
+        super().setUp()
+        self.paydunya = _PayDunyaFactice(self, statut_confirmation="completed")
+        self.paiement = Payment.objects.create(
+            client=self.client_user, demande_prestation=self.demande, montant=Decimal("10000.00"),
+            provider=Payment.Provider.PAYDUNYA, statut=Payment.Statut.EN_ATTENTE,
+            reference_externe="test_COH", idempotency_key="coherence",
+        )
+
+    def _callback(self, **modif):
+        donnees = {
+            "hash": HASH_VALIDE, "status": "completed",
+            "invoice": {"token": "test_COH", "total_amount": "10000"},
+            "custom_data": {"payment_id": str(self.paiement.id), "demande_prestation_id": str(self.demande.id)},
+        }
+        for cle, valeur in modif.items():
+            donnees[cle].update(valeur)
+        return donnees
+
+    def test_facture_d_une_autre_demande_rejetee(self):
+        with self.assertRaises(ErreurPaiement):
+            traiter_callback_paiement_paydunya(self._callback(custom_data={"demande_prestation_id": "00000000-0000-0000-0000-000000000000"}), HASH_VALIDE)
+        self.paiement.refresh_from_db()
+        self.assertEqual(self.paiement.statut, Payment.Statut.EN_ATTENTE)
+
+    def test_devise_inattendue_rejetee(self):
+        with self.assertRaises(ErreurPaiement):
+            traiter_callback_paiement_paydunya(self._callback(invoice={"currency": "EUR"}), HASH_VALIDE)
+        self.paiement.refresh_from_db()
+        self.assertEqual(self.paiement.statut, Payment.Statut.EN_ATTENTE)
+
+    def test_devise_xof_et_bonne_demande_acceptees(self):
+        traiter_callback_paiement_paydunya(self._callback(invoice={"currency": "XOF"}), HASH_VALIDE)
+        self.paiement.refresh_from_db()
+        self.assertEqual(self.paiement.statut, Payment.Statut.REUSSI)
+        self.assertEqual(Transaction.objects.filter(type=Transaction.Type.BLOCAGE).count(), 1)
+
+
+@override_settings(**PAYDUNYA_SETTINGS)
+class RetraitPayDunyaApiTests(WalletTestCase):
+    """Retrait via l'API, avec la même préparation que PayDunyaPayoutTests (9 000 FCFA disponibles)."""
+
+    def setUp(self):
+        super().setUp()
+        with override_settings(PAYMENT_PROVIDER="sandbox"):
+            initier_paiement(self.client_user, self.demande, "clef-retrait-api-setup")
+            liberer_fonds_pour_prestation(self.demande)
+        patcheur = patch("apps.wallet.providers.paydunya.PayDunyaClient")
+        self.client_cls = patcheur.start()
+        self.addCleanup(patcheur.stop)
+        self.pd = self.client_cls.return_value
+        self.pd.creer_facture_deboursement.return_value = {"response_code": "00", "disburse_token": "DISB-1"}
+        self.pd.soumettre_deboursement.return_value = {
+            "response_code": "00", "response_text": "Transaction completed successfully",
+            "status": "pending", "transaction_id": "TFA-TX-1",
+        }
+        self.client.force_authenticate(user=self.prestataire_user)
+
+    def retirer(self, montant="5000", destination="77 123 45 67", provider="WAVE", cle="retrait-api"):
+        return self.client.post(
+            reverse("mes-retraits"),
+            {"montant": montant, "provider": provider, "destination": destination, "idempotency_key": cle},
+            format="json",
+        )
+
+    def _disponible(self):
+        return Wallet.objects.get(prestataire=self.profil).solde_disponible
+
+    def test_retrait_valide_reserve_le_montant_et_passe_en_cours(self):
+        response = self.retirer()
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["statut"], Withdrawal.Statut.EN_COURS)
+        self.assertEqual(response.data["destination"], "771234567")  # normalisé
+        self.assertEqual(self._disponible(), Decimal("4000.00"))
+        self.pd.creer_facture_deboursement.assert_called_once_with(
+            account_alias="771234567", amount=5000, withdraw_mode="wave-senegal",
+            callback_url="https://mimosy.example.com/api/wallet/webhooks/paydunya-payout/",
+        )
+        retrait = Withdrawal.objects.get()
+        self.pd.soumettre_deboursement.assert_called_once_with("DISB-1", disburse_id=str(retrait.id))
+
+    def test_montant_superieur_au_solde_refuse(self):
+        response = self.retirer(montant="9001")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._disponible(), Decimal("9000.00"))
+        self.pd.creer_facture_deboursement.assert_not_called()
+
+    def test_montant_nul_negatif_ou_decimal_refuse(self):
+        for montant in ["0", "-500", "1000.50"]:
+            response = self.retirer(montant=montant, cle=f"retrait-{montant}")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, montant)
+        self.assertEqual(self._disponible(), Decimal("9000.00"))
+        self.assertEqual(Withdrawal.objects.count(), 0)
+
+    def test_numero_invalide_refuse(self):
+        response = self.retirer(destination="12345")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Withdrawal.objects.count(), 0)
+
+    def test_client_ne_peut_pas_retirer(self):
+        self.client.force_authenticate(user=self.client_user)
+        self.assertEqual(self.retirer().status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_soumission_annoncee_failed_recredite_et_explique(self):
+        self.pd.soumettre_deboursement.return_value = {"response_code": "00", "status": "failed", "response_text": "Solde marchand insuffisant"}
+        response = self.retirer()
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["statut"], Withdrawal.Statut.ECHOUE)
+        self.assertEqual(response.data["detail"], "Solde marchand insuffisant")
+        self.assertEqual(self._disponible(), Decimal("9000.00"))
+
+    def test_cles_de_test_refusees_par_l_api_de_retrait_recredite_et_explique(self):
+        """Réponse réelle observée : l'API de déboursement n'accepte que des clés live."""
+
+        self.pd.creer_facture_deboursement.return_value = {"response_code": "1001", "response_text": "LIVE Private Key and Token combination is invalid"}
+        response = self.retirer()
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("LIVE Private Key", response.data["detail"])
+        self.assertEqual(self._disponible(), Decimal("9000.00"))
+
+    def test_impossible_de_retirer_deux_fois_le_meme_solde(self):
+        self.assertEqual(self.retirer(montant="9000", cle="r1").status_code, status.HTTP_201_CREATED)
+        second = self.retirer(montant="9000", cle="r2")
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._disponible(), Decimal("0.00"))
+
+
+@override_settings(**PAYDUNYA_SETTINGS)
+class ConcurrenceRetraitTests(TransactionTestCase):
+    """Deux retraits vraiment simultanés (deux connexions PostgreSQL) sur un solde qui n'en couvre qu'un."""
+
+    def setUp(self):
+        WalletTestCase.setUp(self)
+        Wallet.objects.create(prestataire=self.profil, solde_disponible=Decimal("9000.00"))
+        patcheur = patch("apps.wallet.providers.paydunya.PayDunyaClient")
+        pd = patcheur.start().return_value
+        self.addCleanup(patcheur.stop)
+        pd.creer_facture_deboursement.return_value = {"response_code": "00", "disburse_token": "DISB-C"}
+        pd.soumettre_deboursement.return_value = {"response_code": "00", "status": "pending"}
+
+    def test_deux_retraits_simultanes_ne_depassent_jamais_le_solde(self):
+        barriere = threading.Barrier(2)
+        resultats, erreurs = [], []
+
+        def retirer(cle):
+            try:
+                barriere.wait()
+                resultats.append(initier_retrait(self.profil, Decimal("6000"), Withdrawal.MoyenRetrait.WAVE, "771234567", cle))
+            except ErreurRetrait as erreur:
+                erreurs.append(erreur)
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=retirer, args=(f"conc-{i}",)) for i in (1, 2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual((len(resultats), len(erreurs)), (1, 1))
+        self.assertEqual(Wallet.objects.get(prestataire=self.profil).solde_disponible, Decimal("3000.00"))
+        self.assertEqual(Withdrawal.objects.count(), 1)
