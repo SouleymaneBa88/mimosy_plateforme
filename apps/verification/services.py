@@ -92,7 +92,21 @@ OCR_MODEL = "microsoft/trocr-base-printed"
 # en .jpg et envoyer le bon Content-Type : sans cette vérification,
 # un PDF ou un exécutable passerait la validation basée sur le type MIME.
 
-# Signatures binaires reconnues pour chaque format accepté.
+# Signatures binaires reconnues pour chaque format accepté.Le problème est le suivant.
+
+# Quelqu'un peut envoyer :
+
+# virus.exe
+
+# et simplement le renommer :
+
+# piece.jpg
+
+# L'extension dit :
+
+# .jpg
+
+# Mais le contenu réel n'est pas une image.
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/jpeg": b"\xff\xd8\xff",
     "image/png":  b"\x89PNG",     # \x89\x50\x4e\x47
