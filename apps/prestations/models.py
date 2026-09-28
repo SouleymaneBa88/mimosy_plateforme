@@ -17,7 +17,11 @@ class DemandePrestation(models.Model):
 		ACCEPTEE = "ACCEPTEE", "Acceptée"
 		# Le prestataire a refusé la demande.
 		REFUSEE = "REFUSEE", "Refusée"
-		# La prestation a été réalisée et terminée.
+		# Le prestataire indique avoir réalisé la prestation : elle attend
+		# la validation du client. Les fonds payés restent bloqués.
+		REALISEE = "REALISEE", "Réalisée, en attente de validation"
+		# La prestation a été validée (par le client, ou automatiquement
+		# après PRESTATION_DELAI_VALIDATION_HEURES) : fonds libérés.
 		TERMINEE = "TERMINEE", "Terminée"
 		# La demande a été annulée.
 		ANNULEE = "ANNULEE", "Annulée"
@@ -63,3 +67,11 @@ class DemandePrestation(models.Model):
 	budget = models.DecimalField(max_digits=12, decimal_places=2)
 	# La date de création, remplie automatiquement à la création.
 	date_creation = models.DateTimeField(auto_now_add=True)
+	# La date à laquelle le prestataire a marqué la prestation comme
+	# réalisée : point de départ du délai de validation automatique.
+	date_realisation = models.DateTimeField(null=True, blank=True)
+	# La date à laquelle la prestation a été validée (passage à TERMINEE).
+	date_validation = models.DateTimeField(null=True, blank=True)
+	# Vrai si la validation a été faite automatiquement, faute de réponse
+	# du client dans le délai (voir apps.prestations.services).
+	validation_automatique = models.BooleanField(default=False)
