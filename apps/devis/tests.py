@@ -343,7 +343,7 @@ class DevisPermissionsAPITests(APITestCase):
         url = reverse("reponse-devis-list")
         data = {
             "demande": str(self.demande_a.id),
-            "prix_propose": "10000.00",
+            "montant_main_oeuvre": "10000.00",
             "delai_estime": 2,
         }
         response = self.client.post(url, data, format="json")
@@ -369,7 +369,7 @@ class DevisPermissionsAPITests(APITestCase):
         url = reverse("reponse-devis-list")
         data = {
             "demande": str(self.demande_a.id),
-            "prix_propose": "10000.00",
+            "montant_main_oeuvre": "10000.00",
             "delai_estime": 3,
         }
         response = self.client.post(url, data, format="json")

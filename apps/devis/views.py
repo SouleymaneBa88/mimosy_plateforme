@@ -47,6 +47,8 @@ IsPrestataire,
 IsDemandeDevisOwnerOrAdmin,
 IsReponseDevisOwnerOrAdmin,
 )
+# On importe le passage devis accepté → demande de prestation à payer.
+from .services import ErreurDevis, preparer_demande_prestation
 # On importe les deux serializers de cette app.
 from .serializers import (
 DemandeDevisSerializer,
@@ -399,31 +401,108 @@ class ReponseDevisViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # On refuse si la demande a déjà été traitée.
-        if reponse.demande.statut != DemandeDevis.Statut.EN_ATTENTE:
-            return Response(
-                {"detail": "Cette demande de devis a déjà été traitée."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # On regroupe toutes les écritures liées à cette acceptation en une seule opération.
+        # On regroupe toutes les écritures liées à cette acceptation en une
+        # seule opération, sous le verrou de la demande de devis : un double
+        # clic ou deux onglets ne créent jamais deux demandes de prestation.
         with transaction.atomic():
+            demande = DemandeDevis.objects.select_for_update().get(pk=reponse.demande_id)
+            reponse = ReponseDevis.objects.select_for_update().get(pk=reponse.pk)
+
+            # On refuse si la demande ou la réponse a déjà été traitée.
+            if demande.statut != DemandeDevis.Statut.EN_ATTENTE:
+                return Response(
+                    {"detail": "Cette demande de devis a déjà été traitée."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if reponse.statut != ReponseDevis.Statut.EN_ATTENTE:
+                return Response(
+                    {"detail": "Ce devis ne peut plus être accepté."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Un devis dont la date de validité est dépassée ne s'accepte plus.
+            if reponse.est_expire:
+                return Response(
+                    {"detail": "Ce devis a expiré : demandez un nouveau devis au prestataire."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if reponse.prix_propose is None or reponse.prix_propose <= 0:
+                return Response(
+                    {"detail": "Le montant de ce devis n'est pas valide."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # La demande de prestation qui porte le paiement, la réalisation,
+            # la validation, le litige et l'avis : exactement le flow existant
+            # des demandes de prestation, avec le total du devis pour montant.
+            try:
+                demande_prestation = preparer_demande_prestation(demande, reponse)
+            except ErreurDevis as erreur:
+                return Response({"detail": str(erreur)}, status=status.HTTP_400_BAD_REQUEST)
+
             # On accepte la réponse choisie.
             reponse.statut = ReponseDevis.Statut.ACCEPTEE
             reponse.save(update_fields=["statut"])
             # On refuse automatiquement toutes les autres réponses de la même demande.
-            ReponseDevis.objects.filter(demande=reponse.demande).exclude(pk=reponse.pk).update(
+            ReponseDevis.objects.filter(demande=demande).exclude(pk=reponse.pk).update(
                 statut=ReponseDevis.Statut.REFUSEE
             )
-            # On marque la demande elle-même comme acceptée.
-            reponse.demande.statut = DemandeDevis.Statut.ACCEPTE
-            reponse.demande.save(update_fields=["statut"])
+            # On marque la demande elle-même comme acceptée, liée à sa demande de prestation.
+            demande.statut = DemandeDevis.Statut.ACCEPTE
+            demande.demande_prestation = demande_prestation
+            demande.save(update_fields=["statut", "demande_prestation"])
 
         # On prévient le prestataire que sa proposition a été acceptée.
         Notification.objects.create(
             utilisateur=reponse.prestataire.user,
             titre="Devis accepté",
-            message="Le client a accepté votre proposition.",
+            message=(
+                f"Le client a accepté votre devis de {format(reponse.prix_propose, ',.0f').replace(',', ' ')} FCFA. "
+                "Vous serez prévenu dès que son paiement sera confirmé."
+            ),
+            type=Notification.Type.REPONSE_DEVIS,
+        )
+
+        return Response(
+            ReponseDevisSerializer(reponse, context=self.get_serializer_context()).data,
+            status=status.HTTP_200_OK,
+        )
+
+    # Cette action personnalisée permet au client de refuser une réponse de devis.
+    @action(detail=True, methods=["post"], url_path="refuser")
+    def refuser(self, request, *args, **kwargs):
+        # On récupère la réponse ciblée.
+        reponse = self.get_object()
+
+        # Seul le client propriétaire de la demande peut refuser une réponse.
+        if request.user.role != request.user.Role.CLIENT or reponse.demande.client_id != request.user.id:
+            return Response(
+                {"detail": "Vous ne pouvez refuser que les réponses à vos propres devis."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        with transaction.atomic():
+            demande = DemandeDevis.objects.select_for_update().get(pk=reponse.demande_id)
+            reponse = ReponseDevis.objects.select_for_update().get(pk=reponse.pk)
+
+            if demande.statut != DemandeDevis.Statut.EN_ATTENTE or reponse.statut != ReponseDevis.Statut.EN_ATTENTE:
+                return Response(
+                    {"detail": "Ce devis a déjà été traité."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            reponse.statut = ReponseDevis.Statut.REFUSEE
+            reponse.save(update_fields=["statut"])
+
+            # Plus aucune proposition en attente : la demande de devis est close.
+            if not ReponseDevis.objects.filter(demande=demande, statut=ReponseDevis.Statut.EN_ATTENTE).exists():
+                demande.statut = DemandeDevis.Statut.REFUSE
+                demande.save(update_fields=["statut"])
+
+        # On prévient le prestataire que sa proposition a été refusée.
+        Notification.objects.create(
+            utilisateur=reponse.prestataire.user,
+            titre="Devis refusé",
+            message="Le client a refusé votre proposition.",
             type=Notification.Type.REPONSE_DEVIS,
         )
 
