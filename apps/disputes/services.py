@@ -38,7 +38,7 @@ from django.utils import timezone
 # On importe le modèle Payment pour retrouver le paiement lié à la prestation contestée.
 from apps.wallet.models import Payment
 # On importe la primitive de gel de fonds (voir apps.wallet.services).
-from apps.wallet.services import geler_fonds
+from apps.wallet.services import geler_fonds, geler_fonds_bloques
 
 
 # Cette fonction calcule le montant net que le prestataire devait percevoir pour un paiement donné.
@@ -73,13 +73,16 @@ def geler_fonds_litige(litige) -> None:
     if paiement is None:
         return
 
-    montant_attendu = _montant_net_prestataire(paiement)
-    montant_gele = geler_fonds(
-        litige.prestataire,
-        montant_attendu,
-        litige.id,
-        f"Fonds gelés pour litige \"{litige.motif}\"",
-    )
+    description = f"Fonds gelés pour litige \"{litige.motif}\""
+    montant_gele = Decimal("0")
+    if not paiement.fonds_liberes:
+        # Litige ouvert avant la validation de la prestation : l'argent est
+        # encore bloqué, il passe directement de bloqué à gelé sans jamais
+        # devenir disponible (voir apps.wallet.services.geler_fonds_bloques).
+        montant_gele = geler_fonds_bloques(paiement, litige.id, description)
+    if not montant_gele:
+        # Fonds déjà libérés : on gèle depuis le solde disponible, comme avant.
+        montant_gele = geler_fonds(litige.prestataire, _montant_net_prestataire(paiement), litige.id, description)
 
     litige.montant_concerne = montant_gele
     litige.fonds_geles = True

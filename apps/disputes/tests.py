@@ -356,6 +356,7 @@ class GelFondsLitigeAPITests(LitigeTestCase):
             statut=Payment.Statut.REUSSI,
             provider=Payment.Provider.SANDBOX,
             idempotency_key="paiement-gel-test-1",
+            fonds_liberes=True,
         )
 
     def test_ouverture_litige_bloque_le_montant_net_du_prestataire(self):
@@ -422,6 +423,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
             statut=Payment.Statut.REUSSI,
             provider=Payment.Provider.SANDBOX,
             idempotency_key="paiement-reprise-test-1",
+            fonds_liberes=True,
         )
         self.litige = Litige.objects.create(
             demande_prestation=self.demande,
