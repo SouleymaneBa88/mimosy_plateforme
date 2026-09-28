@@ -1,0 +1,21 @@
+# Développement : chargé automatiquement par « docker compose up ».
+#
+# - Serveur de développement (runserver = Daphne avec rechargement automatique
+#   à chaque modification du code).
+# - Seul le code est monté depuis la machine (apps/, config/, manage.py) :
+#   jamais le fichier .env local, qui contient les accès à la base de la machine.
+# - Port publié sur 127.0.0.1 uniquement (inaccessible depuis le réseau).
+#   Le frontend Vite (lancé sur la machine) utilise http://localhost:8000 par
+#   défaut ; BACKEND_PORT permet de choisir un autre port si 8000 est pris.
+
+services:
+  backend:
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./apps:/app/apps
+      - ./config:/app/config
+      - ./manage.py:/app/manage.py
+      - media:/app/media
+      - hf_cache:/app/.cache/huggingface

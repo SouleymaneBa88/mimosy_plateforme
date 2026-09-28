@@ -1,0 +1,26 @@
+---
+title: MIMOSY — Vérification d'identité
+---
+classDiagram
+    direction LR
+    class DocumentIdentite {
+        +uuid id
+        +str type_document
+        +file fichier
+        +str statut
+        +json donnees_extraites
+        +json resultat_comparaison
+        +float score_correspondance
+        +text motif_rejet
+        +datetime date_soumission
+        +datetime date_analyse_debut
+        +datetime date_decision
+    }
+    class User {
+        <<autre domaine>>
+    }
+    class ProfilPrestataire {
+        <<autre domaine>>
+    }
+    DocumentIdentite "0..*" --> "1" ProfilPrestataire : prestataire
+    DocumentIdentite "0..*" --> "0..1" User : valide_par

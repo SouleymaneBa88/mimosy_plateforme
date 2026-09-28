@@ -1,0 +1,58 @@
+---
+title: MIMOSY — Communication, avis et signalements
+---
+classDiagram
+    direction LR
+    class Message {
+        +uuid id
+        +text contenu
+        +bool lu
+        +datetime date_envoi
+    }
+    class Notification {
+        +uuid id
+        +str titre
+        +text message
+        +str type
+        +bool lu
+        +datetime date_creation
+    }
+    class Avis {
+        +uuid id
+        +int note
+        +text commentaire
+        +str statut
+        +str sentiment
+        +float score_sentiment
+        +float score_toxicite
+        +bool est_inapproprie
+        +datetime date_analyse
+        +datetime date_creation
+    }
+    class Signalement {
+        +uuid id
+        +str motif
+        +text description
+        +str type_cible
+        +str statut
+        +datetime date_creation
+        +text note_resolution
+        +datetime date_traitement
+    }
+    class User {
+        <<autre domaine>>
+    }
+    class ProfilPrestataire {
+        <<autre domaine>>
+    }
+    class DemandePrestation {
+        <<autre domaine>>
+    }
+    Message "0..*" --> "1" User : expediteur
+    Message "0..*" --> "1" User : destinataire
+    Notification "0..*" --> "1" User : utilisateur
+    Avis "0..*" --> "1" User : auteur
+    Avis "0..*" --> "1" ProfilPrestataire : prestataire
+    Avis "0..1" --> "1" DemandePrestation : prestation
+    Signalement "0..*" --> "1" User : createur
+    Signalement "0..*" --> "0..1" User : traite_par

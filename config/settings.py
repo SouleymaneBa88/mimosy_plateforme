@@ -10,27 +10,82 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
+from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
+import os
+
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def env_bool(nom_variable, valeur_defaut):
+    """Convertit une variable d'environnement en booléen sans piège.
+
+    os.getenv() renvoie toujours une chaîne : bool("False") vaut True
+    en Python, donc un simple bool(os.getenv(...)) rendrait DEBUG=False
+    inopérant. On compare explicitement la chaîne obtenue à un ensemble
+    de valeurs reconnues comme vraies.
+    """
+
+    valeur = os.getenv(nom_variable)
+
+    if valeur is None:
+        return valeur_defaut
+
+    return valeur.strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_list(nom_variable, valeur_defaut=""):
+    """Découpe une variable d'environnement en liste, sur les virgules.
+
+    Utilisé pour ALLOWED_HOSTS, CORS_ALLOWED_ORIGINS et
+    CSRF_TRUSTED_ORIGINS : les espaces autour de chaque valeur sont
+    retirés et les entrées vides sont ignorées.
+    """
+
+    valeur = os.getenv(nom_variable, valeur_defaut)
+
+    return [item.strip() for item in valeur.split(",") if item.strip()]
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-o!goz%tki!ic6okbv$xrx9opc(ilc175qd-)+%2&cdhvrx=(!6'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool("DEBUG", True)
 
-ALLOWED_HOSTS = []
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+
+if not SECRET_KEY:
+    if DEBUG:
+        # Clé de secours pour le développement local uniquement. Elle
+        # est volontairement générique et ne protège rien de réel :
+        # elle sert seulement à ce qu'un nouveau développeur puisse
+        # lancer le projet sans avoir configuré de fichier .env au
+        # préalable. Elle ne doit jamais être utilisée en production.
+        SECRET_KEY = "django-insecure-dev-only-set-DJANGO_SECRET_KEY-in-env"
+    else:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY doit être défini dans les variables "
+            "d'environnement lorsque DEBUG=False."
+        )
+
+ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 
 # Application definition
 
 INSTALLED_APPS = [
+    # Daphne doit être avant django.contrib.staticfiles : il remplace alors la
+    # commande « runserver » par un serveur ASGI, capable de gérer HTTP et
+    # WebSocket. Les requêtes HTTP sont traitées exactement comme avant.
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -39,6 +94,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    # Django Channels : couche temps réel (WebSocket), voir config/asgi.py.
+    'channels',
 
     # MIMOSY
     'apps.accounts',
@@ -47,11 +104,24 @@ INSTALLED_APPS = [
     'apps.services',
     'apps.prestations',
     'apps.devis',
+    'apps.rendezvous',
+    'apps.verification',
+    'apps.wallet',
     'apps.messaging',
     'apps.notifications',
     'apps.reviews',
     'apps.reports',
+    'apps.disputes',
+    'apps.trust',
+    'apps.diagnosis',
+    'apps.adminpanel',
+    # Couche temps réel : tickets et connexions WebSocket (voir docs/temps-reel.md).
+    'apps.realtime',
     "drf_spectacular",
+
+    # Liste noire des refresh tokens JWT, utilisée pour invalider un
+    # token au moment de la déconnexion (voir apps.accounts.views.LogoutView).
+    "rest_framework_simplejwt.token_blacklist",
 ]
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -61,12 +131,48 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ),
+    # Limites de base appliquées à toutes les requêtes, plus des scopes
+    # dédiés pour les endpoints les plus exposés aux abus (login,
+    # inscription, envoi de message). Ces valeurs conviennent au
+    # développement et à un usage normal ; elles devront être ajustées
+    # une fois le trafic réel de production connu.
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("THROTTLE_RATE_ANON", "100/min"),
+        "user": os.getenv("THROTTLE_RATE_USER", "300/min"),
+        "login": os.getenv("THROTTLE_RATE_LOGIN", "10/min"),
+        "register": os.getenv("THROTTLE_RATE_REGISTER", "10/min"),
+        "message": os.getenv("THROTTLE_RATE_MESSAGE", "30/min"),
+        # Délivrance des tickets de connexion WebSocket (POST /api/ws/ticket/).
+        "ws_ticket": os.getenv("THROTTLE_RATE_WS_TICKET", "30/min"),
+    },
 }
 SPECTACULAR_SETTINGS = {
     "TITLE": "MIMOSY API",
     "DESCRIPTION": "API de la plateforme MIMOSY de mise en relation entre clients et prestataires.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+}
+
+# Durées volontairement courtes pour le token d'accès : un token volé ou
+# intercepté ne reste exploitable qu'une demi-heure. Le refresh token dure
+# une semaine, ce qui évite à un client de devoir se reconnecter trop
+# souvent tout en gardant une session qui expire naturellement.
+#
+# La rotation des refresh tokens (ROTATE_REFRESH_TOKENS) reste désactivée :
+# le frontend actuel ne stocke que le token d'accès renvoyé par
+# /api/auth/token/refresh/ et ignore un éventuel nouveau refresh token.
+# L'activer sans adapter le frontend déconnecterait les utilisateurs dès
+# le premier rafraîchissement, puisque l'ancien refresh token serait mis
+# en liste noire alors qu'il resterait le seul stocké côté client.
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": False,
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -78,12 +184,20 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:5174",
-]
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:5174,"
+    "http://127.0.0.1:5173,http://127.0.0.1:5174",
+)
+
+# L'API elle-même est authentifiée par JWT (jeton dans l'en-tête
+# Authorization), pas par cookie de session : le middleware CSRF ne
+# s'applique donc pas aux appels du frontend Vue vers /api/. Il reste
+# actif pour /admin/, qui utilise l'authentification par session de
+# Django. CSRF_TRUSTED_ORIGINS ne concerne que ce cas (accès à
+# l'admin depuis un domaine différent de celui qui le sert) et reste
+# vide tant qu'aucun domaine de production n'est défini.
+CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 ROOT_URLCONF = 'config.urls'
 
@@ -104,14 +218,87 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
+# ------------------------------------------------------------------
+# Temps réel (Django Channels)
+# ------------------------------------------------------------------
+# REST reste le moyen d'effectuer les actions et la source de vérité ; les
+# WebSockets servent uniquement à prévenir le navigateur qu'un événement a
+# eu lieu. Voir docs/temps-reel.md.
+#
+# Point d'entrée ASGI : HTTP (Django, comme avant) + WebSocket (Channels).
+# WSGI_APPLICATION ci-dessus est conservé pour un déploiement HTTP seul.
+ASGI_APPLICATION = 'config.asgi.application'
+
+# Channel layer : la « boîte aux lettres » qui permet à n'importe quel
+# process (vue REST, thread d'analyse OCR...) d'envoyer un événement aux
+# connexions WebSocket, même si elles sont ouvertes dans un autre process.
+#   - REDIS_URL défini   → Redis : obligatoire dès qu'il y a plusieurs
+#                           process (cas normal en production).
+#   - REDIS_URL absent   → mémoire du process : suffisant en développement
+#                           (un seul process), inutilisable en production.
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                # socket_timeout=None : depuis redis-py 8.0, les lectures
+                # expirent par défaut après 5 s, exactement la durée du
+                # BZPOPMIN bloquant de channels_redis. Sans ce réglage, le
+                # consumer lève « Timeout reading from redis » toutes les
+                # 5 s et chaque WebSocket est coupé puis reconnecté.
+                "hosts": [{"address": REDIS_URL, "socket_timeout": None}],
+                # Un événement non lu en 60 s est abandonné : un WebSocket
+                # n'est pas une file d'attente, REST reste la référence.
+                "expiry": 60,
+            },
+        },
+    }
+    # Cache Django partagé par tous les process, dans le même Redis :
+    #   - tickets WebSocket (apps/realtime/tickets.py) : un ticket créé par un
+    #     process doit être reconnu par celui qui reçoit la connexion ;
+    #   - compteurs de limitation de débit (DRF throttling) : la limite
+    #     s'applique alors à l'ensemble du serveur, pas process par process.
+    # Des données courtes et jetables uniquement : PostgreSQL reste la source
+    # de vérité, rien de métier n'est stocké dans Redis.
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "KEY_PREFIX": "mimosy",
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
+    }
+    if not DEBUG:
+        import warnings
+
+        warnings.warn(
+            "REDIS_URL n'est pas défini alors que DEBUG=False : le channel layer "
+            "en mémoire ne relie pas plusieurs process, les événements temps réel "
+            "ne fonctionneront pas en production.",
+            stacklevel=1,
+        )
+
 
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        # DB_* en priorité (poste de développement) ; à défaut, les noms
+        # standard de l'image PostgreSQL (POSTGRES_*), pour que Docker
+        # configure la base et Django avec un seul fichier, sans dupliquer
+        # le mot de passe (voir docker-compose.yml).
+        "NAME": os.getenv("DB_NAME") or os.getenv("POSTGRES_DB"),
+        "USER": os.getenv("DB_USER") or os.getenv("POSTGRES_USER"),
+        "PASSWORD": os.getenv("DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD"),
+        "HOST": os.getenv("DB_HOST", "localhost"),
+        "PORT": os.getenv("DB_PORT", "5432"),
     }
 }
 
@@ -151,17 +338,194 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+# Dossier où « collectstatic » rassemble les fichiers statiques (admin,
+# documentation de l'API) pour qu'un serveur web (nginx) les serve en
+# production. Sans effet en développement (DEBUG=True).
+STATIC_ROOT = Path(os.getenv("STATIC_ROOT", BASE_DIR / "staticfiles"))
 
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Plafond global de la taille d'un corps de requête, cohérent avec la
+# limite de 5 Mo déjà imposée aux photos de profil (voir
+# apps.accounts.serializers.PHOTO_TAILLE_MAX_OCTETS). Sans ce réglage,
+# la valeur par défaut de Django (2,5 Mo) serait plus stricte que ce
+# que l'application autorise réellement.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
+#
+# Aucun envoi d'email n'est encore implémenté dans les vues : ce
+# réglage utilise donc le backend console (les emails s'affichent dans
+# le terminal du serveur) tant qu'un vrai fournisseur n'est pas
+# configuré. Le nom de réglage correct pour Django est EMAIL_BACKEND
+# (MAILERS n'est pas reconnu par le framework et n'avait donc aucun
+# effet).
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend",
+)
+
+AUTH_USER_MODEL = "accounts.User"
+
+# Toujours actifs : ils ne dépendent pas d'un certificat HTTPS et ne
+# cassent donc rien en développement local.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "same-origin"
+
+# Ces réglages supposent que le site est réellement servi en HTTPS,
+# via un reverse proxy ou un certificat TLS placé devant Django. Les
+# activer sans HTTPS réel rendrait le site inaccessible : ils ne
+# s'appliquent donc qu'en dehors du développement local (DEBUG=False),
+# c'est-à-dire une fois qu'un vrai déploiement HTTPS existe.
+if not DEBUG:
+    # Derrière un reverse proxy (nginx), c'est lui qui reçoit la connexion
+    # HTTPS : il transmet le protocole d'origine dans X-Forwarded-Proto (et
+    # écrase toute valeur envoyée par le client). Sans ce réglage, Django
+    # croirait toujours recevoir du HTTP et redirigerait à l'infini.
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+    # HTTPS obligatoire par défaut. HTTPS_ACTIF=false sert uniquement à
+    # tester la configuration de production en local, sans certificat.
+    HTTPS_ACTIF = env_bool("HTTPS_ACTIF", True)
+    SECURE_SSL_REDIRECT = HTTPS_ACTIF
+    SESSION_COOKIE_SECURE = HTTPS_ACTIF
+    CSRF_COOKIE_SECURE = HTTPS_ACTIF
+    if HTTPS_ACTIF:
+        SECURE_HSTS_SECONDS = 60 * 60 * 24 * 7  # une semaine, à augmenter progressivement
+        SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+        SECURE_HSTS_PRELOAD = True
+
+# Active ou non l'analyse IA (sentiment + modération) des avis à leur
+# création (voir apps.reviews.services et apps.reviews.views). Désactivée
+# par défaut : les modèles utilisés (transformers/torch) sont lourds et
+# nécessitent un téléchargement depuis Hugging Face au premier appel, ce
+# qui ne doit pas être une condition pour que le reste du backend
+# fonctionne (développement local, tests automatisés, environnement sans
+# accès internet). À activer explicitement via la variable d'environnement
+# une fois l'infrastructure prête à héberger ces modèles.
+AVIS_ANALYSE_IA_ACTIVE = os.getenv("AVIS_ANALYSE_IA_ACTIVE", "false").lower() == "true"
+
+# Confiance minimale (0 à 1) en dessous de laquelle une prédiction du
+# modèle de sentiment/modération est ignorée plutôt qu'utilisée : une
+# seule valeur centralisée (voir apps.reviews.services), pas un nombre
+# répété à plusieurs endroits.
+AVIS_SEUIL_CONFIANCE = float(os.getenv("AVIS_SEUIL_CONFIANCE", "0.70"))
+
+# Même logique que AVIS_ANALYSE_IA_ACTIVE ci-dessus, appliquée à l'OCR des
+# documents d'identité (voir apps.verification.services) : désactivée par
+# défaut, à activer explicitement une fois l'infrastructure prête.
+VERIFICATION_IA_ACTIVE = os.getenv("VERIFICATION_IA_ACTIVE", "false").lower() == "true"
+
+# Seuil minimal de ressemblance (SequenceMatcher.ratio) en dessous duquel
+# un champ extrait de la CNI est considéré comme ne correspondant pas aux
+# données d'inscription (voir apps.verification.services.comparer_avec_profil).
+# Valeur par défaut 0.80 : une correspondance quasi-exacte est requise, mais
+# la normalisation (casse + accents + espaces) est appliquée avant la comparaison.
+# En production, augmenter vers 0.85–0.90 pour réduire les faux positifs ;
+# diminuer vers 0.70 si des erreurs OCR fréquentes rejettent des documents légitimes.
+_seuil_brut = os.getenv("SEUIL_CORRESPONDANCE_CHAMP", "0.80")
+try:
+    SEUIL_CORRESPONDANCE_CHAMP = float(_seuil_brut)
+    if not (0.0 < SEUIL_CORRESPONDANCE_CHAMP <= 1.0):
+        raise ValueError(f"Valeur hors intervalle (0, 1] : {SEUIL_CORRESPONDANCE_CHAMP}")
+except (ValueError, TypeError) as _e:
+    import warnings
+    warnings.warn(
+        f"SEUIL_CORRESPONDANCE_CHAMP invalide ({_seuil_brut!r}) : {_e}. "
+        "La valeur par défaut 0.80 est utilisée.",
+        stacklevel=1,
+    )
+    SEUIL_CORRESPONDANCE_CHAMP = 0.80
+
+# Fournisseur de paiement réellement appelé (voir apps.wallet.providers).
+# "sandbox" par défaut : aucun paiement réel tant que PayDunya n'est pas
+# explicitement configuré avec de vraies clés API ("paydunya"). MIMOSY
+# n'intègre plus Wave/Orange Money directement : PayDunya est
+# l'unique fournisseur externe, et route lui-même les déboursements
+# vers Wave Sénégal / Orange Money Sénégal (voir apps.wallet.providers.paydunya).
+PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "sandbox")
+
+# Délai (minutes) après lequel un paiement resté INITIE est considéré
+# comme abandonné : MIMOSY a créé le paiement mais n'a jamais reçu la
+# réponse de PayDunya (serveur arrêté pendant l'appel, par exemple).
+# Passé ce délai, il devient ECHOUE et le client peut réessayer.
+PAYMENT_INITIE_TIMEOUT_MINUTES = int(os.getenv("PAYMENT_INITIE_TIMEOUT_MINUTES", "10"))
+
+# Taux de commission MIMOSY, centralisé ici plutôt que codé en dur dans
+# chaque endroit qui en a besoin (voir apps.wallet.services).
+COMMISSION_TAUX = Decimal(os.getenv("COMMISSION_TAUX", "0.10"))
+
+# Délai laissé à un prestataire pour refaire une prestation contestée
+# après une décision administrative "reprise" sur un litige (voir
+# apps.disputes.views.LitigeViewSet.demander_reprise).
+LITIGE_DELAI_REPRISE_HEURES = int(os.getenv("LITIGE_DELAI_REPRISE_HEURES", "24"))
+
+# Répartition financière appliquée quand un litige est réattribué à un
+# nouveau prestataire après expiration du délai de reprise (voir
+# apps.disputes.views.LitigeViewSet.reattribuer) : la part du prestataire
+# initial se déduit de celle-ci (1 - LITIGE_REATTRIBUTION_PART_NOUVEAU).
+LITIGE_REATTRIBUTION_PART_NOUVEAU = Decimal(os.getenv("LITIGE_REATTRIBUTION_PART_NOUVEAU", "0.75"))
+
+# Délai laissé au client pour valider une prestation que le prestataire a
+# marquée comme réalisée (statut REALISEE). Passé ce délai, sans litige
+# ouvert, la prestation est validée automatiquement et les fonds sont
+# libérés (voir apps.prestations.services.valider_prestations_expirees).
+PRESTATION_DELAI_VALIDATION_HEURES = int(os.getenv("PRESTATION_DELAI_VALIDATION_HEURES", "72"))
+
+# Credentials PayDunya (voir apps.wallet.paydunya_client.PayDunyaClient).
+# Lus dans l'environnement (back_Mimosy/.env.docker avec Docker, .env
+# sinon ; ces deux fichiers sont ignorés par Git) : une clé écrite dans
+# le code resterait dans l'historique Git pour toujours et serait
+# partagée avec quiconque clone le dépôt.
+# Jamais de valeur par défaut réelle ici : en l'absence de ces trois
+# clés, PayDunyaClient refuse explicitement de s'instancier plutôt que
+# d'échouer silencieusement ou d'appeler l'API avec des clés vides.
+PAYDUNYA_MASTER_KEY = os.getenv("PAYDUNYA_MASTER_KEY", "")
+PAYDUNYA_PRIVATE_KEY = os.getenv("PAYDUNYA_PRIVATE_KEY", "")
+PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
+
+# "test" par défaut, jamais "live" : le passage en mode réel doit être
+# une décision explicite de déploiement, jamais un défaut implicite.
+# Décidé uniquement côté serveur (voir apps.wallet.paydunya_client) :
+# le frontend ne peut jamais transmettre ni influencer ce choix.
+PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")
+
+# URLs que PayDunya appelle depuis ses propres serveurs (jamais depuis
+# le navigateur du client) pour confirmer, de façon asynchrone, l'issue
+# d'un paiement ou d'un déboursement. Doivent être des URLs absolues et
+# joignables publiquement (donc vides et sans effet en développement
+# local tant qu'aucun tunnel/déploiement ne les rend accessibles).
+PAYDUNYA_CALLBACK_URL = os.getenv("PAYDUNYA_CALLBACK_URL", "")
+PAYDUNYA_PAYOUT_CALLBACK_URL = os.getenv("PAYDUNYA_PAYOUT_CALLBACK_URL", "")
+
+# Base du frontend Vue, utilisée pour construire les URLs de retour
+# (return_url/cancel_url) transmises à PayDunya lors de la création
+# d'une facture de paiement : après avoir payé, PayDunya redirige le
+# client vers cette adresse, jamais vers une URL fournie par la requête.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
+
+# Journalisation du wallet (paiements PayDunya) : sans cette entrée, seuls
+# les avertissements (WARNING) seraient visibles, car aucune configuration
+# LOGGING n'existait. Portée volontairement limitée au logger "apps.wallet" :
+# les autres journaux (Django, autres apps) gardent leur comportement.
+# Le code du wallet ne journalise jamais de clé PayDunya, de hash, ni de
+# valeur de token de facture (voir apps/wallet/services.py).
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {"format": "{levelname} {asctime} {name} : {message}", "style": "{"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "simple"},
+    },
+    "loggers": {
+        "apps.wallet": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
 }
-AUTH_USER_MODEL = "accounts.User"
