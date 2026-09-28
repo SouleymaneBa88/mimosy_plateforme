@@ -1,0 +1,48 @@
+---
+title: MIMOSY — Comptes et profils
+---
+classDiagram
+    direction LR
+    class User {
+        <<AUTH_USER_MODEL>>
+        +int id
+        +str password
+        +datetime last_login
+        +bool is_superuser
+        +bool is_staff
+        +bool is_active
+        +datetime date_joined
+        +str first_name
+        +str last_name
+        +str username
+        +email email
+        +str phone
+        +file profile_photo
+        +str role
+    }
+    class ProfilPrestataire {
+        +uuid id
+        +text description
+        +date date_naissance
+        +int experience
+        +bool disponibilite
+        +str statut_verification
+    }
+    class Localisation {
+        +uuid id
+        +str adresse
+        +str ville
+        +str quartier
+        +decimal latitude
+        +decimal longitude
+        +datetime updated_at
+    }
+    class Competence {
+        <<autre domaine>>
+    }
+    class AbstractUser {
+        <<Django>>
+    }
+    AbstractUser <|-- User
+    ProfilPrestataire "0..1" --> "1" User : user
+    Localisation "0..1" --> "1" User : user

@@ -1,8 +1,14 @@
 # Environnement virtuel
 venv/
+.venv/
 
-# Variables d'environnement
+# Variables d'environnement (secrets) : seuls les modèles *.example sont versionnés.
 .env
+.env.docker
+.env.docker.prod
+
+# Fichiers statiques générés par collectstatic
+staticfiles/
 
 # Base de données locale
 db.sqlite3

@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    actor P as Prestataire
+    participant API as DRF — POST /api/verification/document/
+    participant DB as PostgreSQL
+    participant TH as Thread traiter_verification_document
+    participant IA as services.analyser_document (OpenCV + TrOCR)
+    participant EV as realtime/evenements.py
+    actor A as Administrateur
+
+    P->>API: fichier JPEG/PNG (≤ 5 Mo, octets magiques contrôlés) + type_document
+    API->>DB: update_or_create DocumentIdentite (statut EN_ANALYSE)
+    API->>TH: démarrage du traitement en arrière-plan
+    API-->>P: 202 Accepted (statut + message)
+    TH->>IA: analyser_document(document)
+    IA->>EV: verification.analyse (etape LECTURE / EXTRACTION / COMPARAISON)
+    IA->>IA: detecter_carte → segments de texte → TrOCR par segment (confiance)
+    IA->>IA: texte_plausible → extraire_champs → comparer_avec_profil (seuil 0.80)
+    TH->>DB: donnees_extraites, resultat_comparaison, score → statut A_VERIFIER
+    TH->>DB: Notification au prestataire
+    EV-->>P: verification.a_verifier
+    EV-->>A: verification.a_verifier (groupe admins)
+    A->>API: POST /api/verification/admin/documents/{id}/valider/ (ou rejeter/)
+    API->>DB: statut VALIDE → ProfilPrestataire.statut_verification = VERIFIE
+    EV-->>P: verification.validee (ou verification.rejetee)
+    Note over IA,A: TrOCR lit du texte : il ne prouve ni l'authenticité juridique de la pièce,<br/>ni la présence réelle de la personne (liveness). La décision finale reste humaine.

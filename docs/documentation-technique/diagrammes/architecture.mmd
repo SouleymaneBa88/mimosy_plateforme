@@ -1,0 +1,37 @@
+flowchart TD
+    subgraph Navigateur["Navigateur (client, prestataire, admin)"]
+        VUE["Application Vue 3<br/>Vite · Pinia · Vue Router · Tailwind"]
+        LEAFLET["Leaflet<br/>(ProvidersMap.vue, admin/Localisations.vue)"]
+    end
+
+    OSM["Tuiles OpenStreetMap<br/>tile.openstreetmap.org"]
+
+    subgraph Docker["Réseau Docker « interne »"]
+        NGINX["nginx 1.27<br/>seul point d'entrée (prod)<br/>SPA · /static · /media/profiles/"]
+        subgraph Backend["Conteneur backend : Daphne (ASGI)"]
+            DRF["Django 6 + DRF<br/>ViewSets · Serializers · Permissions<br/>SimpleJWT"]
+            CHANNELS["Django Channels<br/>OriginValidator → TicketAuthMiddleware<br/>EvenementsConsumer (/ws/)"]
+            TROCR["TrOCR microsoft/trocr-base-printed<br/>+ OpenCV (thread d'analyse)"]
+        end
+        PG[("PostgreSQL 16<br/>SOURCE DE VÉRITÉ<br/>volume postgres_data")]
+        REDIS[("Redis 7.4<br/>channel layer + cache<br/>(tickets WebSocket)")]
+        MEDIA[("volume media<br/>photos, pièces, preuves")]
+        HF[("volume hf_cache<br/>modèles IA")]
+    end
+
+    PAYDUNYA["PayDunya<br/>(paiement + payout)"]
+
+    VUE -- "HTTPS /api/* (JWT Bearer)" --> NGINX
+    VUE -- "WSS /ws/?ticket=…" --> NGINX
+    NGINX -- "proxy /api, /admin" --> DRF
+    NGINX -- "proxy /ws (Upgrade)" --> CHANNELS
+    DRF -- "ORM" --> PG
+    DRF -- "fichiers" --> MEDIA
+    DRF -- "publier() après on_commit" --> REDIS
+    REDIS -- "group_send user_ID / admins" --> CHANNELS
+    CHANNELS -- "événement minimal {type, id, statut}" --> VUE
+    DRF -- "document déposé" --> TROCR
+    TROCR -- "poids du modèle" --> HF
+    DRF -- "création facture / vérif. statut" --> PAYDUNYA
+    PAYDUNYA -- "callback (hash SHA-512)" --> DRF
+    LEAFLET -- "tuiles" --> OSM
