@@ -224,3 +224,104 @@ class LocalisationUpsertEtPermissionsAPITests(APITestCase):
         self.assertEqual(str(localisation.latitude), "14.716677")
         self.assertEqual(str(localisation.longitude), "-17.467686")
         self.assertEqual(localisation.adresse, "Villa 12, Sacré-Cœur 3")
+
+
+class LocalisationClientParcoursTests(APITestCase):
+    """
+    Parcours réel de la localisation d'un client : absence, enregistrement,
+    mise à jour des seules coordonnées GPS, validation, et utilisation par la
+    recherche de prestataires à proximité (repli « adresse enregistrée » de
+    la recherche « Autour de moi », voir frontend useLocation.positionPourRecherche).
+    """
+
+    def setUp(self):
+        self.client_user = User.objects.create_user(
+            username="loc_parcours_client", email="loc-parcours-client@test.com", password="TestPassword123!",
+            first_name="Awa", last_name="Diop", phone="770000080", role=User.Role.CLIENT,
+        )
+        self.url = reverse("localisation-list")
+
+    def enregistrer(self, **surcharges):
+        donnees = {"adresse": "Rue 10", "ville": "Dakar", "quartier": "Grand Yoff", "latitude": "14.716677", "longitude": "-17.467686"}
+        donnees.update(surcharges)
+        self.client.force_authenticate(user=self.client_user)
+        return self.client.post(self.url, donnees, format="json")
+
+    def test_localisation_absente_renvoie_une_liste_vide(self):
+        self.client.force_authenticate(user=self.client_user)
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(response.data), [])
+
+    def test_anonyme_ne_peut_pas_lire_de_localisation(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_latitude_et_longitude_ne_sont_jamais_inversees(self):
+        self.enregistrer()
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.data[0]["latitude"], "14.716677")
+        self.assertEqual(response.data[0]["longitude"], "-17.467686")
+
+    def test_mise_a_jour_des_seules_coordonnees_gps(self):
+        localisation_id = self.enregistrer().data["id"]
+        response = self.client.patch(
+            reverse("localisation-detail", kwargs={"pk": localisation_id}),
+            {"latitude": "14.700000", "longitude": "-17.440000"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        localisation = Localisation.objects.get(user=self.client_user)
+        self.assertEqual(str(localisation.latitude), "14.700000")
+        self.assertEqual(str(localisation.longitude), "-17.440000")
+        self.assertEqual(localisation.adresse, "Rue 10")  # l'adresse saisie n'est pas touchée
+
+    def test_mise_a_jour_avec_latitude_invalide_refusee(self):
+        localisation_id = self.enregistrer().data["id"]
+        response = self.client.patch(
+            reverse("localisation-detail", kwargs={"pk": localisation_id}), {"latitude": "95"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_mise_a_jour_avec_longitude_invalide_refusee(self):
+        localisation_id = self.enregistrer().data["id"]
+        response = self.client.patch(
+            reverse("localisation-detail", kwargs={"pk": localisation_id}), {"longitude": "-181"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_la_localisation_enregistree_permet_la_recherche_de_proximite(self):
+        from decimal import Decimal
+
+        from apps.profiles.models import ProfilPrestataire
+        from apps.services.models import Categorie, PrestataireService, Service
+
+        prestataire_user = User.objects.create_user(
+            username="loc_parcours_prestataire", email="loc-parcours-prestataire@test.com", password="TestPassword123!",
+            first_name="Ibrahima", last_name="Ndiaye", phone="770000081", role=User.Role.PRESTATAIRE,
+        )
+        profil = ProfilPrestataire.objects.create(
+            user=prestataire_user, description="Électricien", experience=3,
+            statut_verification=ProfilPrestataire.StatutVerification.VERIFIE,
+        )
+        Localisation.objects.create(
+            user=prestataire_user, adresse="Atelier", ville="Dakar", quartier="HLM",
+            latitude="14.710000", longitude="-17.460000",
+        )
+        service = Service.objects.create(categorie=Categorie.objects.create(nom="Électricité"), nom="Installation électrique")
+        PrestataireService.objects.create(prestataire=profil, service=service, prix=Decimal("15000"), unite="intervention", disponible=True)
+
+        # Le client enregistre sa localisation, puis la recherche l'utilise
+        # exactement comme le fait le frontend (latitude/longitude relues de l'API).
+        self.enregistrer()
+        enregistree = self.client.get(self.url).data[0]
+        response = self.client.get(
+            reverse("recherche"),
+            {"latitude": enregistree["latitude"], "longitude": enregistree["longitude"], "rayon_km": 10},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertLess(response.data["results"][0]["distance_km"], 2)
