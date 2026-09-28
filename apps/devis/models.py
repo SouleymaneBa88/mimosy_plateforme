@@ -19,11 +19,17 @@ deviner facilement le nombre total de devis ou de les énumérer.
 
 # On importe uuid pour créer des identifiants uniques.
 import uuid
+# On importe Decimal pour les montants.
+from decimal import Decimal
 
 # On importe les réglages du projet Django (settings.py).
 from django.conf import settings
+# On importe le validateur de valeur minimale.
+from django.core.validators import MinValueValidator
 # On importe les outils de base pour créer des modèles Django.
 from django.db import models
+# On importe timezone pour comparer la validité d'un devis à la date du jour.
+from django.utils import timezone
 
 
 # Ce modèle représente une demande de devis créée par un client.
@@ -171,10 +177,26 @@ class ReponseDevis(models.Model):
 		related_name="reponses_devis",
 	)
 
-	# Prix proposé par le prestataire pour réaliser la prestation.
-	# Doit être > 0 (validation côté serializer).
-	# Le montant proposé par le prestataire.
+	# TOTAL À PAYER du devis. Jamais saisi par le prestataire : calculé
+	# par le backend (ReponseDevisSerializer) comme matériaux + main-d'œuvre
+	# + frais. C'est ce montant qui devient le budget de la
+	# DemandePrestation créée à l'acceptation, donc le montant payé.
+	# Les réponses antérieures au devis détaillé n'ont que ce total.
 	prix_propose = models.DecimalField(max_digits=12, decimal_places=2)
+	# Prix de la main-d'œuvre / de la prestation elle-même. Vide pour une
+	# réponse antérieure au devis détaillé (seul le total existe alors).
+	montant_main_oeuvre = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+	# Frais supplémentaires prévus (déplacement, location de matériel...).
+	montant_frais = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+	# Nature des frais supplémentaires, si il y en a.
+	description_frais = models.CharField(max_length=255, blank=True)
+	# Conditions particulières du devis (garantie, acompte, exclusions...).
+	conditions = models.TextField(blank=True)
+	# Dernier jour où le client peut accepter ce devis (inclus). Vide :
+	# pas de limite de validité.
+	date_validite = models.DateField(null=True, blank=True)
+	# Date d'envoi du devis. Vide pour les réponses antérieures à ce champ.
+	date_creation = models.DateTimeField(auto_now_add=True, null=True)
 	# La description libre de la proposition.
 	description = models.TextField(blank=True)
 
@@ -203,3 +225,49 @@ class ReponseDevis(models.Model):
 				name="unique_reponse_prestataire_demande",
 			)
 		]
+
+	# Indique si le devis détaille ses montants (matériaux / main-d'œuvre / frais).
+	@property
+	def est_detaille(self):
+		return self.montant_main_oeuvre is not None
+
+	# Somme des lignes de matériaux, calculée depuis la base.
+	@property
+	def total_materiaux(self):
+		return sum((ligne.montant for ligne in self.lignes_materiaux.all()), Decimal("0"))
+
+	# Indique si la date de validité du devis est dépassée.
+	@property
+	def est_expire(self):
+		return self.date_validite is not None and self.date_validite < timezone.localdate()
+
+
+# Ce modèle représente une ligne « matériau » d'un devis.
+class LigneMateriau(models.Model):
+	"""Un matériau chiffré dans une réponse de devis : quantité × prix unitaire."""
+
+	# Identifiant unique de la ligne.
+	id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+	# Le devis auquel appartient la ligne. CASCADE : la ligne n'a pas de sens sans lui.
+	reponse = models.ForeignKey(ReponseDevis, on_delete=models.CASCADE, related_name="lignes_materiaux")
+	# Le nom du matériau (ex. « Tuyau PVC 32 mm »).
+	designation = models.CharField(max_length=200)
+	# La quantité estimée, strictement positive.
+	quantite = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+	# L'unité de la quantité (ex. « m », « sac », « pièce »), facultative.
+	unite = models.CharField(max_length=30, blank=True)
+	# Le prix estimé d'une unité, en FCFA.
+	prix_unitaire = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
+	# L'ordre d'affichage de la ligne dans le devis.
+	ordre = models.PositiveSmallIntegerField(default=0)
+
+	class Meta:
+		ordering = ["ordre", "id"]
+
+	# Le montant de la ligne (quantité × prix unitaire), arrondi au centime.
+	@property
+	def montant(self):
+		return (self.quantite * self.prix_unitaire).quantize(Decimal("0.01"))
+
+	def __str__(self):
+		return f"{self.designation} × {self.quantite}"
