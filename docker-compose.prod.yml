@@ -1,0 +1,63 @@
+# Production : docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Différences avec le développement :
+# - fichier de variables .env.docker.prod (DEBUG=False, vraie clé secrète...) ;
+# - Daphne sert le code de l'image (aucun code monté), sans rechargement ;
+# - le backend ne publie AUCUN port : tout passe par nginx (service « frontend »),
+#   seul point d'entrée, qui sert l'application Vue et relaie /api, /ws et /admin.
+#
+# HTTPS : en production réelle, le certificat TLS est posé devant nginx (ou dans
+# nginx) ; nginx transmet alors X-Forwarded-Proto: https à Django.
+#
+# Volumes PROTÉGÉS : la base et les fichiers déposés sont des volumes
+# « externes ». Compose ne les crée pas et ne peut PAS les supprimer, même avec
+# « docker compose down -v ». À créer une seule fois sur le serveur :
+#   docker volume create mimosy_prod_postgres_data
+#   docker volume create mimosy_prod_media
+# S'ils manquent, le démarrage échoue avec un message clair (rien n'est perdu).
+
+# Projet distinct du développement : conteneurs et réseau séparés.
+name: mimosy-prod
+
+services:
+  db:
+    env_file: !override .env.docker.prod
+
+  migrate:
+    env_file: !override .env.docker.prod
+
+  backend:
+    env_file: !override .env.docker.prod
+
+  frontend:
+    build:
+      # Dépôt du frontend, voisin de ce dépôt (voir mimosy/Dockerfile).
+      context: ../mimosy
+      args:
+        # Adresse publique de MIMOSY : l'API et le WebSocket sont servis par la
+        # même origine que l'application (nginx), donc aucun CORS entre eux.
+        VITE_API_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}
+    image: mimosy-frontend:local
+    ports:
+      - "${PUBLIC_PORT:-8080}:80"
+    volumes:
+      # Lecture seule : nginx sert les fichiers, il ne peut pas les modifier.
+      - static_files:/srv/static:ro
+      - media:/srv/media:ro
+    depends_on:
+      backend: { condition: service_healthy }
+    networks: [interne]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: mimosy_prod_postgres_data
+    external: true
+  media:
+    name: mimosy_prod_media
+    external: true
+  # Recréables sans perte de donnée : gérés par Compose.
+  static_files:
+    name: mimosy_prod_static_files
+  hf_cache:
+    name: mimosy_prod_hf_cache

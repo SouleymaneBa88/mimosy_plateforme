@@ -1,0 +1,59 @@
+---
+title: MIMOSY — Paiement et wallet
+---
+classDiagram
+    direction LR
+    class Payment {
+        +uuid id
+        +decimal montant
+        +str statut
+        +str provider
+        +str reference_externe
+        +str idempotency_key
+        +bool fonds_liberes
+        +datetime date_creation
+        +datetime date_modification
+    }
+    class Wallet {
+        +uuid id
+        +decimal solde_bloque
+        +decimal solde_disponible
+        +decimal solde_gele
+        +str devise
+        +str statut
+        +datetime date_creation
+        +datetime date_modification
+    }
+    class Transaction {
+        +uuid id
+        +str type
+        +decimal montant
+        +uuid reference
+        +str description
+        +datetime date_creation
+    }
+    class Withdrawal {
+        +uuid id
+        +decimal montant
+        +str provider
+        +str destination
+        +str statut
+        +str reference_externe
+        +str idempotency_key
+        +datetime date_creation
+    }
+    class User {
+        <<autre domaine>>
+    }
+    class ProfilPrestataire {
+        <<autre domaine>>
+    }
+    class DemandePrestation {
+        <<autre domaine>>
+    }
+    Payment "0..*" --> "1" User : client
+    Payment "0..*" --> "1" DemandePrestation : demande_prestation
+    Wallet "0..1" --> "1" ProfilPrestataire : prestataire
+    Transaction "0..*" --> "1" Wallet : wallet
+    Withdrawal "0..*" --> "1" ProfilPrestataire : prestataire
+    Withdrawal "0..*" --> "1" Wallet : wallet

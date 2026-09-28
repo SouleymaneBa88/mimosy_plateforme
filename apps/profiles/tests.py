@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.locations.models import Localisation
 from apps.services.models import Categorie, Competence, PrestataireService, Service
 
 from .models import ProfilPrestataire
@@ -30,6 +31,14 @@ class ProfilPrestataireApiTests(APITestCase):
             user=cls.user,
             description="Installation et dépannage électrique.",
             experience=5,
+        )
+        Localisation.objects.create(
+            user=cls.user,
+            adresse="1 rue du Plateau",
+            ville="Dakar",
+            quartier="Plateau",
+            latitude=Decimal("14.6928"),
+            longitude=Decimal("-17.4467"),
         )
 
         # Prestataire B
@@ -96,6 +105,15 @@ class ProfilPrestataireApiTests(APITestCase):
 
     def test_public_profile_returns_real_relations_without_sensitive_contact(self):
         """Le profil public expose les informations professionnelles."""
+        # Identité vérifiée localement à ce test uniquement : la voir
+        # publiée (avec ses services) suppose désormais un profil
+        # vérifié (voir ETAPES_OBLIGATOIRES_PUBLICATION). D'autres tests
+        # de cette classe (ex. test_provider_cannot_modify_verification_status)
+        # dépendent au contraire du statut par défaut EN_ATTENTE : on ne
+        # touche donc pas la fixture partagée dans setUpTestData.
+        self.profile.statut_verification = ProfilPrestataire.StatutVerification.VERIFIE
+        self.profile.save(update_fields=["statut_verification"])
+
         response = self.client.get(
             reverse("prestataire-detail", args=[self.profile.pk])
         )
@@ -248,3 +266,151 @@ class ProfilPrestataireApiTests(APITestCase):
             self.profile.statut_verification,
             ProfilPrestataire.StatutVerification.EN_ATTENTE,
         )
+
+
+class ProfilCompletionTests(APITestCase):
+    """Vérifie le calcul de complétion et la règle de visibilité qui en découle."""
+
+    def setUp(self):
+        self.prestataire_user = User.objects.create_user(
+            username="completion-prestataire",
+            email="completion-prestataire@test.com",
+            password="TestPassword123!",
+            first_name="Sara",
+            last_name="Thiam",
+            phone="770000060",
+            role=User.Role.PRESTATAIRE,
+        )
+        self.profil = ProfilPrestataire.objects.create(user=self.prestataire_user)
+
+        self.categorie = Categorie.objects.create(nom="Peinture")
+        self.service = Service.objects.create(categorie=self.categorie, nom="Peinture intérieure")
+
+    def test_profil_fraichement_cree_est_incomplet(self):
+        from .services import calculer_completion
+
+        resultat = calculer_completion(self.profil)
+
+        self.assertFalse(resultat["est_publiable"])
+        self.assertFalse(resultat["etapes"]["informations_professionnelles"])
+        self.assertFalse(resultat["etapes"]["localisation"])
+        self.assertFalse(resultat["etapes"]["services"])
+        self.assertLess(resultat["pourcentage"], 100)
+
+    def test_profil_devient_publiable_avec_les_quatre_etapes_obligatoires(self):
+        from apps.locations.models import Localisation
+
+        from .services import calculer_completion
+
+        self.profil.description = "Peintre professionnel."
+        self.profil.experience = 3
+        self.profil.statut_verification = ProfilPrestataire.StatutVerification.VERIFIE
+        self.profil.save(update_fields=["description", "experience", "statut_verification"])
+
+        Localisation.objects.create(
+            user=self.prestataire_user,
+            adresse="Rue de test",
+            ville="Dakar",
+            quartier="Medina",
+            latitude=Decimal("14.68"),
+            longitude=Decimal("-17.45"),
+        )
+
+        PrestataireService.objects.create(
+            prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True
+        )
+
+        resultat = calculer_completion(self.profil)
+
+        self.assertTrue(resultat["est_publiable"])
+        # disponibilités restent en attente : le pourcentage n'est donc
+        # pas 100%, même si le profil est déjà publiable (voir
+        # ETAPES_OBLIGATOIRES_PUBLICATION).
+        self.assertLess(resultat["pourcentage"], 100)
+
+    def test_profil_non_verifie_reste_non_publiable_meme_avec_le_reste_complet(self):
+        """
+        L'identité vérifiée est désormais une condition obligatoire à
+        la publication (décision produit) : un profil par ailleurs
+        complet (description, localisation, service) mais dont
+        l'identité n'a pas encore été validée par un administrateur ne
+        doit jamais être publiable.
+        """
+
+        from apps.locations.models import Localisation
+
+        from .services import calculer_completion
+
+        self.profil.description = "Peintre professionnel."
+        self.profil.experience = 3
+        self.profil.save(update_fields=["description", "experience"])
+
+        Localisation.objects.create(
+            user=self.prestataire_user,
+            adresse="Rue de test",
+            ville="Dakar",
+            quartier="Medina",
+            latitude=Decimal("14.68"),
+            longitude=Decimal("-17.45"),
+        )
+
+        PrestataireService.objects.create(
+            prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True
+        )
+
+        resultat = calculer_completion(self.profil)
+
+        self.assertFalse(resultat["est_publiable"])
+        self.assertFalse(resultat["etapes"]["verification_identite"])
+
+    def test_me_endpoint_expose_la_completion(self):
+        self.client.force_authenticate(user=self.prestataire_user)
+        response = self.client.get(reverse("prestataire-me"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("completion", response.data)
+        self.assertFalse(response.data["completion"]["est_publiable"])
+
+    def test_prestataire_incomplet_absent_de_la_liste_publique(self):
+        response = self.client.get(reverse("prestataire-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [item["id"] for item in response.data]
+        self.assertNotIn(str(self.profil.id), ids)
+
+    def test_service_dun_profil_incomplet_absent_de_la_recherche(self):
+        PrestataireService.objects.create(
+            prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True
+        )
+
+        response = self.client.get(reverse("recherche"))
+
+        ids = {item["prestataire_id"] for item in response.data["results"]}
+        self.assertNotIn(str(self.profil.id), ids)
+
+    def test_service_dun_profil_incomplet_absent_de_la_recherche_intelligente(self):
+        PrestataireService.objects.create(
+            prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True
+        )
+
+        response = self.client.post(reverse("recherche-intelligente"), {"query": "peinture"}, format="json")
+
+        ids = {item["prestataire_id"] for item in response.data["results"]}
+        self.assertNotIn(str(self.profil.id), ids)
+
+    def test_profil_public_dun_prestataire_incomplet_ne_montre_aucun_service(self):
+        """
+        retrieve() reste accessible par lien direct, mais le serializer
+        masque les services d'un profil non publiable (double
+        protection, voir ProfilPrestataireSerializer.get_services).
+        """
+
+        PrestataireService.objects.create(
+            prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True
+        )
+
+        response = self.client.get(reverse("prestataire-detail", kwargs={"pk": self.profil.id}))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["services"], [])
+        self.assertFalse(response.data["est_publiable"])

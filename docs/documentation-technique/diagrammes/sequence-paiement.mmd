@@ -1,0 +1,25 @@
+sequenceDiagram
+    autonumber
+    actor CL as Client
+    participant API as DRF — MesPaiementsView (POST /api/wallet/mes-paiements/)
+    participant S as wallet/services.py
+    participant DB as PostgreSQL
+    participant PD as PayDunya
+    participant CB as PayDunyaCallbackView (/api/wallet/webhooks/paydunya/)
+    actor P as Prestataire
+
+    CL->>API: demande_prestation + idempotency_key
+    API->>S: initier_paiement(client, demande, idempotency_key)
+    S->>DB: SELECT … FOR UPDATE sur la demande
+    S->>S: contrôles : demande du client, statut ACCEPTEE, aucun paiement REUSSI
+    S->>DB: Payment (montant = budget côté serveur, jamais celui de la requête)
+    S->>PD: get_provider().initier_paiement(paiement)<br/>(PayDunya, ou Sandbox si PAYMENT_PROVIDER=sandbox)
+    PD-->>CL: page de paiement PayDunya
+    PD->>CB: callback (données + hash)
+    CB->>S: traiter_callback_paiement_paydunya(donnees, hash)
+    S->>S: hash SHA-512 de la clé maître comparé par hmac.compare_digest,<br/>token et montant vérifiés
+    S->>DB: marquer_paiement_reussi → Payment REUSSI + Transaction BLOCAGE (solde_bloque)
+    Note over S,DB: Contrainte un_seul_paiement_reussi_par_demande :<br/>un second succès pour la même demande est refusé par la base
+    P->>API: POST /api/demande-prestation/{id}/terminer/
+    API->>S: liberer_fonds_pour_prestation(demande)
+    S->>DB: Transaction COMMISSION (10 %) + LIBERATION (net → solde_disponible), fonds_liberes = True

@@ -1,0 +1,89 @@
+classDiagram
+    direction LR
+    class User {
+        email
+        role : CLIENT | PRESTATAIRE | ADMIN
+    }
+    class ProfilPrestataire {
+        statut_verification
+        disponibilite
+    }
+    class Localisation {
+        ville
+        latitude
+        longitude
+    }
+    class Service {
+        nom
+    }
+    class Categorie {
+        nom
+    }
+    class PrestataireService {
+        prix
+        unite
+    }
+    class DemandePrestation {
+        statut
+        budget
+    }
+    class DemandeDevis {
+        statut
+    }
+    class RendezVous {
+        date_heure_debut
+        statut
+    }
+    class Payment {
+        montant
+        statut
+    }
+    class Wallet {
+        solde_bloque
+        solde_disponible
+        solde_gele
+    }
+    class Transaction {
+        type
+        montant
+    }
+    class DocumentIdentite {
+        type_document
+        statut
+    }
+    class Litige {
+        statut
+        fonds_geles
+    }
+    class Avis {
+        note
+        statut
+    }
+    class Message {
+        contenu
+        lu
+    }
+    class Notification {
+        type
+        lu
+    }
+
+    User "1" -- "0..1" ProfilPrestataire : user
+    User "1" -- "0..1" Localisation : user
+    Categorie "1" -- "0..*" Service
+    ProfilPrestataire "1" -- "0..*" PrestataireService
+    Service "1" -- "0..*" PrestataireService
+    User "1" -- "0..*" DemandePrestation : client
+    ProfilPrestataire "1" -- "0..*" DemandePrestation : prestataire
+    Service "0..1" -- "0..*" DemandePrestation : service (null=True)
+    DemandePrestation "0..1" -- "0..*" DemandeDevis : demande_prestation (null=True)
+    User "1" -- "0..*" RendezVous : client
+    ProfilPrestataire "1" -- "0..*" RendezVous : prestataire
+    DemandePrestation "1" -- "0..*" Payment
+    ProfilPrestataire "1" -- "0..1" Wallet
+    Wallet "1" -- "0..*" Transaction
+    ProfilPrestataire "1" -- "0..*" DocumentIdentite
+    DemandePrestation "1" -- "0..*" Litige
+    DemandePrestation "1" -- "0..1" Avis : prestation
+    User "1" -- "0..*" Message : expediteur / destinataire
+    User "1" -- "0..*" Notification : utilisateur
