@@ -1,0 +1,35 @@
+# Ce qui n'entre JAMAIS dans l'image du backend.
+
+# Secrets et configuration locale : les variables sont fournies par
+# docker-compose (env_file), jamais copiées dans l'image.
+.env
+.env.*
+!.env.example
+!.env.docker.example
+!.env.docker.prod.example
+
+# Environnements virtuels du poste de développement (reconstruits dans l'image).
+venv/
+.venv/
+
+# Données : fichiers déposés par les utilisateurs (pièces d'identité...),
+# fichiers statiques générés, base SQLite éventuelle. Les conteneurs utilisent
+# des volumes Docker.
+media/
+staticfiles/
+db.sqlite3
+
+# Git, caches, logs et fichiers de l'éditeur.
+.git/
+.gitignore
+**/__pycache__/
+**/*.py[cod]
+*.log
+hs_err_pid*.log
+.vscode/
+.idea/
+.DS_Store
+
+# Fichiers Docker eux-mêmes.
+Dockerfile
+docker-compose*.yml

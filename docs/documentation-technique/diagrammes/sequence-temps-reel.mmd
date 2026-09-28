@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    actor P as Prestataire (navigateur)
+    participant API as DRF — DemandePrestationViewSet.accepter
+    participant DB as PostgreSQL
+    participant SIG as realtime/signaux.py (pre_save / post_save)
+    participant EV as realtime/evenements.py — publier()
+    participant R as Redis (channel layer)
+    participant C as EvenementsConsumer (groupe user_ID du client)
+    actor CL as Client (navigateur)
+
+    Note over CL,C: Au préalable : POST /api/ws/ticket/ (JWT) → ticket 30 s à usage unique<br/>puis ouverture de /ws/?ticket=… (OriginValidator + TicketAuthMiddleware)
+    P->>API: POST /api/demande-prestation/{id}/accepter/ (JWT)
+    API->>API: permission + contrôle « statut == EN_ATTENTE »
+    API->>DB: UPDATE statut = ACCEPTEE (+ Notification créée)
+    DB-->>SIG: pre_save mémorise l'ancien statut, post_save détecte le changement
+    SIG->>EV: publier_demande_statut(demande)
+    EV->>EV: transaction.on_commit(envoyer) — rien n'est envoyé si la transaction échoue
+    API-->>P: 200 OK (demande sérialisée)
+    EV->>R: group_send("user_ID_du_client", {evenement: "demande.statut", data: {id, statut}})
+    R->>C: message type "realtime.evenement"
+    C->>CL: {"type": "demande.statut", "id": "…", "statut": "ACCEPTEE"}
+    CL->>API: GET /api/demande-prestation/{id}/ (rechargement par REST, permissions appliquées)
+    API-->>CL: détail à jour (source de vérité : PostgreSQL)

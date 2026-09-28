@@ -1,0 +1,18 @@
+---
+title: MIMOSY — Localisation
+---
+classDiagram
+    direction LR
+    class Localisation {
+        +uuid id
+        +str adresse
+        +str ville
+        +str quartier
+        +decimal latitude
+        +decimal longitude
+        +datetime updated_at
+    }
+    class User {
+        <<autre domaine>>
+    }
+    Localisation "0..1" --> "1" User : user
