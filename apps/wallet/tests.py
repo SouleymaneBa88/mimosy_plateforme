@@ -255,17 +255,29 @@ class LibererFondsTests(WalletTestCase):
         wallet = Wallet.objects.get(prestataire=self.profil)
         self.assertEqual(wallet.solde_disponible, Decimal("9000.00"))
 
-    def test_terminer_une_demande_payee_libere_bien_les_fonds_via_l_api(self):
-        """Vérifie l'intégration réelle avec DemandePrestationViewSet.terminer()."""
+    def test_terminer_puis_confirmer_libere_les_fonds_via_l_api(self):
+        """
+        Intégration réelle avec DemandePrestationViewSet : « terminer » par
+        le prestataire ne libère RIEN (fonds toujours bloqués) ; seule la
+        confirmation du client rend l'argent disponible.
+        """
 
         initier_paiement(self.client_user, self.demande, "clef-integration")
 
         self.client.force_authenticate(user=self.prestataire_user)
-        url = reverse("demande-prestation-terminer", kwargs={"pk": self.demande.id})
-        response = self.client.post(url)
+        response = self.client.post(reverse("demande-prestation-terminer", kwargs={"pk": self.demande.id}))
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         wallet = Wallet.objects.get(prestataire=self.profil)
+        self.assertEqual(wallet.solde_bloque, Decimal("10000.00"))
+        self.assertEqual(wallet.solde_disponible, Decimal("0.00"))
+
+        self.client.force_authenticate(user=self.client_user)
+        response = self.client.post(reverse("demande-prestation-confirmer", kwargs={"pk": self.demande.id}))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.solde_bloque, Decimal("0.00"))
         self.assertEqual(wallet.solde_disponible, Decimal("9000.00"))
 
     @override_settings(COMMISSION_TAUX=Decimal("0.15"))

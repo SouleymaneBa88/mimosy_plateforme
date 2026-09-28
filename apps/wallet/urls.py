@@ -14,6 +14,7 @@ from rest_framework.routers import DefaultRouter
 
 # On importe toutes les vues à relier aux URLs.
 from .views import (
+    FacturePaiementView,
     MesPaiementsView,
     MesRetraitsView,
     MesTransactionsView,
@@ -45,6 +46,7 @@ urlpatterns = [
     path("wallet/mes-paiements/", MesPaiementsView.as_view(), name="mes-paiements"),
     # Vérifier le statut réel d'un paiement précis.
     path("wallet/mes-paiements/<uuid:pk>/statut/", StatutPaiementView.as_view(), name="statut-paiement"),
+    path("wallet/mes-paiements/<uuid:pk>/facture/", FacturePaiementView.as_view(), name="facture-paiement"),
     # Recevoir le callback PayDunya de paiement.
     path("wallet/webhooks/paydunya/", PayDunyaCallbackView.as_view(), name="wallet-webhook-paydunya"),
     # Recevoir le callback PayDunya de déboursement.

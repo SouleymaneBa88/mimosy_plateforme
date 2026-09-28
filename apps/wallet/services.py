@@ -103,6 +103,23 @@ def obtenir_ou_creer_wallet(prestataire) -> Wallet:
     return wallet
 
 
+# Cette fonction renvoie le paiement le plus significatif d'une demande (lecture seule).
+def paiement_principal(demande_prestation) -> Optional[Payment]:
+    """
+    Plusieurs tentatives peuvent exister (une échouée puis une réussie,
+    un paiement en double...) : on renvoie la plus parlante pour
+    l'affichage — réussi, puis en attente, initié, à rembourser — sinon
+    la plus récente, ou None si la demande n'a jamais été payée.
+    """
+
+    paiements = list(Payment.objects.filter(demande_prestation=demande_prestation).order_by("-date_creation"))
+    for statut in (Payment.Statut.REUSSI, Payment.Statut.EN_ATTENTE, Payment.Statut.INITIE, Payment.Statut.A_REMBOURSER):
+        for paiement in paiements:
+            if paiement.statut == statut:
+                return paiement
+    return paiements[0] if paiements else None
+
+
 # Les statuts qui "occupent" une demande : tant qu'un paiement est dans
 # l'un d'eux, aucun autre paiement ne peut être créé pour la même demande
 # (même règle que la contrainte SQL un_seul_paiement_actif_par_demande).
@@ -449,6 +466,38 @@ def marquer_paiement_reussi(paiement: Payment, reference_externe: str) -> None:
         paiement.statut = paiement_verrouille.statut
         paiement.reference_externe = paiement_verrouille.reference_externe
 
+    # Hors transaction : le paiement vient d'être confirmé (une seule fois,
+    # les cas déjà traités sont sortis plus haut). Les deux parties sont
+    # prévenues que l'argent est sécurisé, pas encore disponible.
+    _notifier_paiement_confirme(paiement_verrouille)
+
+
+# Cette fonction prévient le client et le prestataire qu'un paiement est confirmé.
+def _notifier_paiement_confirme(paiement: Payment) -> None:
+    from apps.notifications.models import Notification
+
+    demande = paiement.demande_prestation
+    montant = format(paiement.montant, ",.0f").replace(",", " ")
+    service = demande.service.nom if demande.service_id else "la prestation"
+    Notification.objects.create(
+        utilisateur=paiement.client,
+        titre="Paiement confirmé",
+        message=(
+            f"Votre paiement de {montant} FCFA pour {service} est confirmé. "
+            "Les fonds sont sécurisés jusqu'à la validation de la prestation."
+        ),
+        type=Notification.Type.REPONSE_PRESTATION,
+    )
+    Notification.objects.create(
+        utilisateur=demande.prestataire.user,
+        titre="Paiement reçu et sécurisé",
+        message=(
+            f"Le client a payé {montant} FCFA pour {service}. La prestation est à réaliser : "
+            "le montant sera disponible après la validation du client."
+        ),
+        type=Notification.Type.REPONSE_PRESTATION,
+    )
+
 
 # Cette fonction fait passer un paiement en cours au statut échoué.
 def marquer_paiement_echoue(paiement: Payment) -> None:
@@ -635,8 +684,23 @@ def liberer_fonds_pour_prestation(demande_prestation: DemandePrestation) -> None
     if paiement is None:
         return
 
-    # On verrouille le wallet pendant tout le mouvement de fonds.
+    # Un litige en cours garde l'argent sécurisé : jamais de libération
+    # tant qu'il n'est pas tranché (voir apps.disputes.services).
+    from apps.prestations.services import litige_en_cours
+
+    if litige_en_cours(demande_prestation):
+        logger.info("Fonds de la demande %s non libérés : litige en cours.", demande_prestation.pk)
+        return
+
+    # On verrouille le paiement puis le wallet pendant tout le mouvement de fonds.
     with transaction.atomic():
+        # Relecture sous verrou : deux validations concurrentes (client +
+        # validation automatique, ou gel pour litige) ne libèrent jamais
+        # deux fois le même paiement.
+        paiement = Payment.objects.select_for_update().get(pk=paiement.pk)
+        if paiement.fonds_liberes:
+            return
+
         wallet = Wallet.objects.select_for_update().get(prestataire=demande_prestation.prestataire)
 
         # On calcule la commission MIMOSY et le montant net pour le prestataire.
@@ -668,6 +732,56 @@ def liberer_fonds_pour_prestation(demande_prestation: DemandePrestation) -> None
         # On marque les fonds de ce paiement comme définitivement libérés.
         paiement.fonds_liberes = True
         paiement.save(update_fields=["fonds_liberes", "date_modification"])
+
+
+# Cette fonction gèle les fonds encore bloqués d'un paiement (litige ouvert avant la validation).
+def geler_fonds_bloques(paiement: Payment, reference, description: str) -> Decimal:
+    """
+    Litige ouvert AVANT la validation de la prestation : l'argent du
+    client est encore dans Wallet.solde_bloque, jamais passé en disponible.
+    On le fait passer directement de bloqué à gelé, commission MIMOSY
+    déduite (même calcul que liberer_fonds_pour_prestation), pour que la
+    suite du litige (dégel, réattribution) fonctionne exactement comme
+    pour un litige ouvert après libération.
+
+    Le paiement est ensuite marqué fonds_liberes=True : ses fonds ont
+    quitté le solde bloqué, liberer_fonds_pour_prestation ne doit plus
+    jamais les compter une seconde fois. Renvoie le montant gelé
+    (0 si les fonds avaient déjà quitté le blocage).
+    """
+
+    with transaction.atomic():
+        paiement = Payment.objects.select_for_update().get(pk=paiement.pk)
+        if paiement.statut != Payment.Statut.REUSSI or paiement.fonds_liberes:
+            return Decimal("0")
+
+        wallet = Wallet.objects.select_for_update().get(prestataire=paiement.demande_prestation.prestataire)
+
+        commission = (paiement.montant * settings.COMMISSION_TAUX).quantize(Decimal("0.01"))
+        montant_net = paiement.montant - commission
+
+        wallet.solde_bloque = wallet.solde_bloque - paiement.montant
+        wallet.solde_gele = wallet.solde_gele + montant_net
+        wallet.save(update_fields=["solde_bloque", "solde_gele", "date_modification"])
+
+        Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.Type.COMMISSION,
+            montant=commission,
+            reference=paiement.id,
+            description=f"Commission MIMOSY ({settings.COMMISSION_TAUX * 100}%)",
+        )
+        Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.Type.GEL_LITIGE,
+            montant=montant_net,
+            reference=reference,
+            description=description,
+        )
+
+        paiement.fonds_liberes = True
+        paiement.save(update_fields=["fonds_liberes", "date_modification"])
+        return montant_net
 
 
 # Cette fonction gèle une partie du solde disponible d'un prestataire (litige).
