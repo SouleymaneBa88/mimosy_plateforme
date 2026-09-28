@@ -28,6 +28,8 @@ import re
 
 # On importe l'erreur générique levée quand un objet n'existe pas.
 from django.core.exceptions import ObjectDoesNotExist
+# On importe l'erreur levée quand un identifiant n'est pas un UUID valide.
+from django.core.exceptions import ValidationError as DjangoValidationError
 # On importe les codes de statut HTTP et les outils de ViewSet de Django REST Framework.
 from rest_framework import status, viewsets
 # On importe les erreurs pour signaler une ressource introuvable ou un accès refusé.
@@ -39,11 +41,15 @@ from rest_framework.response import Response
 # On importe la vue de base la plus simple de Django REST Framework.
 from rest_framework.views import APIView
 
+# On importe la règle commune « est administrateur ».
+from apps.common.permissions import is_admin_user
 # On importe le modèle DemandePrestation.
 from apps.prestations.models import DemandePrestation
 
 # On importe tous les modèles de cette app.
 from .models import Payment, Transaction, Wallet, Withdrawal
+# On importe la construction de la facture d'un paiement confirmé.
+from .facture import FactureIndisponible, construire_facture
 # On importe la structure décrivant le payeur (moyen, numéro, nom, e-mail).
 from .providers.base import DetailsPayeur
 # On importe les permissions personnalisées de cette app.
@@ -264,6 +270,40 @@ class StatutPaiementView(APIView):
         # On vérifie activement le statut réel auprès de PayDunya si besoin.
         paiement = verifier_statut_paiement(paiement)
         return Response(PaymentSerializer(paiement, context={"request": request}).data)
+
+
+# Cette vue renvoie la facture d'un paiement confirmé.
+class FacturePaiementView(APIView):
+    """
+    GET /api/wallet/mes-paiements/<id>/facture/
+
+    Disponible uniquement pour un paiement REUSSI (confirmé par PayDunya,
+    jamais sur la foi du navigateur), et seulement pour le client qui a
+    payé, le prestataire concerné ou l'administration.
+    """
+
+    # La facture est visible par les deux parties de la prestation.
+    permission_classes = [IsAuthenticated]
+
+    # Cette méthode construit et renvoie la facture.
+    def get(self, request, pk):
+        try:
+            paiement = Payment.objects.select_related(
+                "client", "demande_prestation__service", "demande_prestation__prestataire__user"
+            ).get(pk=pk)
+        except (Payment.DoesNotExist, ValueError, DjangoValidationError):
+            raise NotFound("Paiement introuvable.")
+
+        user = request.user
+        est_client = paiement.client_id == user.id
+        est_prestataire = paiement.demande_prestation.prestataire.user_id == user.id
+        if not (est_client or est_prestataire or is_admin_user(user)):
+            raise PermissionDenied("Cette facture ne vous concerne pas.")
+
+        try:
+            return Response(construire_facture(paiement))
+        except FactureIndisponible as erreur:
+            return Response({"detail": str(erreur)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # Cette vue reçoit le callback PayDunya confirmant l'issue d'un paiement.
