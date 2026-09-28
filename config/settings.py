@@ -243,7 +243,12 @@ if REDIS_URL:
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
             "CONFIG": {
-                "hosts": [REDIS_URL],
+                # socket_timeout=None : depuis redis-py 8.0, les lectures
+                # expirent par défaut après 5 s, exactement la durée du
+                # BZPOPMIN bloquant de channels_redis. Sans ce réglage, le
+                # consumer lève « Timeout reading from redis » toutes les
+                # 5 s et chaque WebSocket est coupé puis reconnecté.
+                "hosts": [{"address": REDIS_URL, "socket_timeout": None}],
                 # Un événement non lu en 60 s est abandonné : un WebSocket
                 # n'est pas une file d'attente, REST reste la référence.
                 "expiry": 60,
@@ -466,6 +471,12 @@ LITIGE_DELAI_REPRISE_HEURES = int(os.getenv("LITIGE_DELAI_REPRISE_HEURES", "24")
 # apps.disputes.views.LitigeViewSet.reattribuer) : la part du prestataire
 # initial se déduit de celle-ci (1 - LITIGE_REATTRIBUTION_PART_NOUVEAU).
 LITIGE_REATTRIBUTION_PART_NOUVEAU = Decimal(os.getenv("LITIGE_REATTRIBUTION_PART_NOUVEAU", "0.75"))
+
+# Délai laissé au client pour valider une prestation que le prestataire a
+# marquée comme réalisée (statut REALISEE). Passé ce délai, sans litige
+# ouvert, la prestation est validée automatiquement et les fonds sont
+# libérés (voir apps.prestations.services.valider_prestations_expirees).
+PRESTATION_DELAI_VALIDATION_HEURES = int(os.getenv("PRESTATION_DELAI_VALIDATION_HEURES", "72"))
 
 # Credentials PayDunya (voir apps.wallet.paydunya_client.PayDunyaClient).
 # Lus dans l'environnement (back_Mimosy/.env.docker avec Docker, .env
