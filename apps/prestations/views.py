@@ -15,6 +15,8 @@ Aucune suppression (DELETE) n'est possible : l'annulation logique
 conserve un historique complet des demandes.
 """
 
+# On importe timezone pour dater la réalisation d'une prestation.
+from django.utils import timezone
 # On importe les codes de statut HTTP et les outils de vues de Django REST Framework.
 from rest_framework import status, viewsets
 # On importe le décorateur qui permet d'ajouter des actions personnalisées.
@@ -32,6 +34,8 @@ from apps.notifications.models import Notification
 from .models import DemandePrestation
 # On importe la permission qui vérifie que l'utilisateur est client.
 from .permissions import IsClient
+# On importe la validation d'une prestation réalisée (libération des fonds).
+from .services import ErreurValidation, valider_prestation, valider_si_delai_depasse
 # On importe les deux serializers utilisés (écriture et lecture).
 from .serializers import (
     DemandePrestationCreateSerializer,
@@ -116,6 +120,16 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
 
         # Tout autre cas : aucune demande visible.
         return queryset.none()
+
+    # Cette méthode récupère la demande ciblée, en appliquant la validation automatique si son délai est dépassé.
+    def get_object(self):
+        demande = super().get_object()
+        # Même principe que les litiges (vérification paresseuse) : une
+        # demande REALISEE dont le délai de validation client est écoulé
+        # est validée dès qu'on y accède, sans attendre le cron.
+        if valider_si_delai_depasse(demande):
+            demande.refresh_from_db()
+        return demande
 
     # Cette méthode choisit quel serializer utiliser selon l'action.
     def get_serializer_class(self):
@@ -365,6 +379,22 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Une demande déjà payée ne s'annule pas en un clic : les fonds
+        # sont bloqués sur le wallet du prestataire et y resteraient
+        # coincés. Le client doit passer par un litige, traité par MIMOSY.
+        from apps.wallet.models import Payment
+
+        if Payment.objects.filter(demande_prestation=demande, statut=Payment.Statut.REUSSI).exists():
+            return Response(
+                {
+                    "detail": (
+                        "Cette demande a déjà été payée : elle ne peut plus être annulée. "
+                        "En cas de problème, signalez un litige."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # On passe la demande au statut "annulée".
         demande.statut = DemandePrestation.Statut.ANNULEE
         demande.save(update_fields=["statut"])
@@ -457,26 +487,66 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # On passe la demande au statut "terminée".
-        demande.statut = DemandePrestation.Statut.TERMINEE
-        demande.save(update_fields=["statut"])
-        # On prévient le client que la prestation est terminée.
+        # Une prestation issue d'un devis se paie TOUJOURS via MIMOSY avant
+        # d'être réalisée : sans paiement confirmé par PayDunya, le
+        # prestataire ne peut pas la déclarer terminée (le client ne
+        # pourrait plus payer une demande REALISEE, voir initier_paiement).
+        from apps.devis.models import ReponseDevis
+        from apps.wallet.models import Payment
+
+        issue_d_un_devis = ReponseDevis.objects.filter(
+            demande__demande_prestation=demande, statut=ReponseDevis.Statut.ACCEPTEE
+        ).exists()
+        if issue_d_un_devis and not Payment.objects.filter(
+            demande_prestation=demande, statut=Payment.Statut.REUSSI
+        ).exists():
+            return Response(
+                {"detail": "Le client n'a pas encore payé ce devis : la prestation ne peut pas être marquée comme terminée."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Le prestataire déclare la prestation réalisée : elle attend
+        # maintenant la validation du client. Aucun fonds n'est libéré ici :
+        # dire « j'ai terminé » ne suffit pas à rendre l'argent retirable
+        # (voir confirmer ci-dessous et apps.prestations.services).
+        demande.statut = DemandePrestation.Statut.REALISEE
+        demande.date_realisation = timezone.now()
+        demande.save(update_fields=["statut", "date_realisation"])
+        # On demande au client de vérifier le travail.
         Notification.objects.create(
             utilisateur=demande.client,
-            titre="Prestation terminée",
-            message=f"La prestation {demande.service.nom} a été marquée comme terminée.",
+            titre="Prestation à valider",
+            message=(
+                f"Le prestataire indique que la prestation {demande.service.nom} est terminée. "
+                "Vérifiez le travail puis confirmez-la, ou signalez un problème."
+            ),
             type=Notification.Type.REPONSE_PRESTATION,
         )
 
-        # N'a d'effet que si un paiement MIMOSY réussi existe pour cette
-        # demande (voir apps.wallet.services) : une demande terminée
-        # sans paiement associé continue de fonctionner exactement comme
-        # avant l'ajout du wallet.
-        # On importe ici, pas en haut du fichier, pour éviter une dépendance directe entre les deux apps.
-        from apps.wallet.services import liberer_fonds_pour_prestation
+        return Response(
+            DemandePrestationSerializer(demande, context=self.get_serializer_context()).data,
+            status=status.HTTP_200_OK,
+        )
 
-        # On libère les fonds bloqués du client vers le prestataire, si un paiement existe.
-        liberer_fonds_pour_prestation(demande)
+    # Cette action personnalisée permet au client de confirmer une prestation réalisée.
+    @action(detail=True, methods=["post"], url_path="confirmer")
+    def confirmer(self, request, *args, **kwargs):
+        # On récupère la demande ciblée.
+        demande = self.get_object()
+
+        # Seul le client propriétaire valide sa prestation : ni le
+        # prestataire, ni un autre client.
+        if request.user.role != User.Role.CLIENT or demande.client_id != request.user.id:
+            return Response(
+                {"detail": "Seul le client de cette demande peut confirmer la prestation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Validation + libération des fonds, sous verrou (voir services).
+        try:
+            demande = valider_prestation(demande)
+        except ErreurValidation as erreur:
+            return Response({"detail": str(erreur)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
             DemandePrestationSerializer(demande, context=self.get_serializer_context()).data,

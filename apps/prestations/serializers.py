@@ -23,6 +23,15 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
     # frontend sache s'il doit proposer "Donner mon avis" ou "Avis déjà
     # envoyé", sans jamais avoir à le déduire lui-même.
     a_un_avis = serializers.SerializerMethodField()
+    # Le paiement MIMOSY le plus significatif de la demande (réussi, puis
+    # en cours...), ou None : le frontend n'a jamais à deviner s'il est payé.
+    paiement = serializers.SerializerMethodField()
+    # Date à laquelle la prestation REALISEE sera validée automatiquement.
+    date_limite_validation = serializers.SerializerMethodField()
+    # Vrai si un litige non tranché existe : la validation est alors bloquée.
+    litige_en_cours = serializers.SerializerMethodField()
+    # La réponse de devis acceptée à l'origine de cette demande, si elle existe.
+    devis_reponse = serializers.SerializerMethodField()
 
     # Cette classe interne configure quel modèle et quels champs utiliser.
     class Meta:
@@ -42,6 +51,13 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
             "budget",
             "a_un_avis",
             "date_creation",
+            "date_realisation",
+            "date_validation",
+            "validation_automatique",
+            "date_limite_validation",
+            "litige_en_cours",
+            "paiement",
+            "devis_reponse",
         ]
 
         # Ces champs ne peuvent pas être modifiés directement par l'utilisateur.
@@ -54,7 +70,52 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
             "statut",
             "a_un_avis",
             "date_creation",
+            "date_realisation",
+            "date_validation",
+            "validation_automatique",
         ]
+
+    # Cette méthode résume le paiement le plus significatif de la demande.
+    def get_paiement(self, obj):
+        # Import local pour éviter un import circulaire entre apps.prestations et apps.wallet.
+        from apps.wallet.services import paiement_principal
+
+        paiement = paiement_principal(obj)
+        if paiement is None:
+            return None
+        return {
+            "id": str(paiement.id),
+            "statut": paiement.statut,
+            "montant": str(paiement.montant),
+            "fonds_liberes": paiement.fonds_liberes,
+        }
+
+    # Cette méthode calcule la date de validation automatique d'une prestation réalisée.
+    def get_date_limite_validation(self, obj):
+        if obj.statut != DemandePrestation.Statut.REALISEE or obj.date_realisation is None:
+            return None
+        from datetime import timedelta
+
+        from django.conf import settings
+
+        limite = obj.date_realisation + timedelta(hours=settings.PRESTATION_DELAI_VALIDATION_HEURES)
+        return serializers.DateTimeField().to_representation(limite)
+
+    # Cette méthode indique si un litige non tranché existe sur la demande.
+    def get_litige_en_cours(self, obj):
+        from .services import litige_en_cours
+
+        return litige_en_cours(obj)
+
+    # Cette méthode renvoie l'identifiant de la réponse de devis acceptée liée, s'il y en a une.
+    def get_devis_reponse(self, obj):
+        from apps.devis.models import ReponseDevis
+
+        reponse = ReponseDevis.objects.filter(
+            demande__demande_prestation=obj,
+            statut=ReponseDevis.Statut.ACCEPTEE,
+        ).values_list("id", flat=True).first()
+        return str(reponse) if reponse else None
 
     # Cette méthode indique si un avis existe déjà pour cette prestation.
     def get_a_un_avis(self, obj):
