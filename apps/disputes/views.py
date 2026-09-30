@@ -80,15 +80,20 @@ TAILLE_MAX_OCTETS = 10 * 1024 * 1024
 
 # Cette classe configure la pagination de la liste des litiges.
 class LitigePagination(PageNumberPagination):
+    # 20 litiges par page par défaut.
     page_size = 20
+    # Le frontend peut changer la taille avec ?page_size=...
     page_size_query_param = "page_size"
+    # Mais jamais plus de 100 par page.
     max_page_size = 100
 
 
 # Cette fonction construit le filtre "je suis partie prenante de ce litige" pour un utilisateur donné.
 def filtre_participant(user):
+    # Un prestataire voit les litiges où il est le prestataire.
     if user.role == User.Role.PRESTATAIRE and getattr(user, "profil_prestataire", None):
         return Q(prestataire=user.profil_prestataire)
+    # Sinon (client), on voit les litiges où l'on est le client.
     return Q(client=user)
 
 
@@ -102,14 +107,18 @@ def _verifier_expiration_reprise(litige):
     touche que les litiges encore REPRISE_DEMANDEE).
     """
 
+    # Rien à faire si le litige n'attend pas une reprise.
     if litige.statut != Litige.Statut.REPRISE_DEMANDEE:
         return
+    # Rien à faire si la date limite n'est pas encore passée.
     if not litige.date_limite_reprise or timezone.now() <= litige.date_limite_reprise:
         return
 
+    # Le délai est dépassé : le litige passe en "délai expiré".
     litige.statut = Litige.Statut.DELAI_EXPIRE
     litige.save(update_fields=["statut"])
 
+    # On prévient le client et le prestataire.
     for destinataire in (litige.client, litige.prestataire.user):
         Notification.objects.create(
             utilisateur=destinataire,
@@ -137,25 +146,31 @@ class LitigeViewSet(viewsets.ModelViewSet):
     statut ne change que via les actions dédiées ci-dessous.
     """
 
+    # Méthodes HTTP autorisées : lecture (GET) et actions (POST) seulement.
     http_method_names = ["get", "post", "head", "options"]
+    # Il faut être connecté ET être une partie du litige (ou admin).
     permission_classes = [IsAuthenticated, IsLitigeParticipantOrAdmin]
     pagination_class = LitigePagination
+    # On accepte le JSON et les formulaires avec fichiers.
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     # Cette méthode construit le queryset visible selon le rôle de l'utilisateur.
     def get_queryset(self):
+        # On charge tout ce qui est utile en une seule fois (moins de requêtes SQL).
         queryset = Litige.objects.select_related(
             "client", "prestataire__user", "ouvert_par", "traite_par", "demande_prestation"
         ).prefetch_related("preuves")
 
         user = self.request.user
 
+        # L'admin voit tous les litiges, avec un filtre optionnel par statut.
         if is_admin_user(user):
             statut = self.request.query_params.get("statut")
             if statut:
                 queryset = queryset.filter(statut=statut)
             return queryset
 
+        # Les autres ne voient que leurs propres litiges.
         return queryset.filter(filtre_participant(user))
 
     # Cette méthode retourne l'objet ciblé, après avoir vérifié l'expiration éventuelle du délai de reprise.
@@ -178,6 +193,7 @@ class LitigeViewSet(viewsets.ModelViewSet):
 
     # Cette méthode choisit quel serializer utiliser selon l'action.
     def get_serializer_class(self):
+        # À la création, on utilise le serializer de création ; sinon celui de lecture.
         if self.action == "create":
             return LitigeCreateSerializer
         return LitigeSerializer
@@ -192,15 +208,19 @@ class LitigeViewSet(viewsets.ModelViewSet):
         à sa place.
         """
 
+        # La demande de prestation choisie par l'utilisateur.
         demande = serializer.validated_data["demande_prestation"]
         user = self.request.user
 
+        # Est-ce le client de la demande ? Est-ce son prestataire ?
         est_client = demande.client_id == user.id
         est_prestataire = getattr(user, "profil_prestataire", None) and demande.prestataire_id == user.profil_prestataire.id
 
+        # Ni l'un ni l'autre : accès refusé.
         if not (est_client or est_prestataire):
             raise PermissionDenied("Vous ne participez pas à cette demande de prestation.")
 
+        # On enregistre le litige. Chaque partie ne peut écrire que SA description.
         litige = serializer.save(
             client=demande.client,
             prestataire=demande.prestataire,
@@ -223,21 +243,26 @@ class LitigeViewSet(viewsets.ModelViewSet):
             type=Notification.Type.LITIGE,
         )
 
+        # On garde le litige créé pour que create() puisse le renvoyer.
         serializer.instance = litige
 
     # Cette méthode renvoie la réponse complète après création.
     def create(self, request, *args, **kwargs):
+        # On valide les données reçues, puis on crée le litige.
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+        # On renvoie le litige complet (avec le serializer de lecture).
         reponse = LitigeSerializer(serializer.instance, context=self.get_serializer_context())
         return Response(reponse.data, status=201)
 
     # Cette action personnalisée dépose une preuve sur un litige existant.
     @action(detail=True, methods=["post"], url_path="preuves")
     def ajouter_preuve(self, request, pk=None):
+        # On récupère le litige (en vérifiant les droits).
         litige = self.get_object()
 
+        # On vérifie le fichier : présent, bon format, pas trop lourd.
         fichier = request.FILES.get("fichier")
         if not fichier:
             raise ValidationError({"fichier": "Un fichier est requis."})
@@ -246,9 +271,11 @@ class LitigeViewSet(viewsets.ModelViewSet):
         if fichier.size > TAILLE_MAX_OCTETS:
             raise ValidationError({"fichier": "Le fichier ne doit pas dépasser 10 Mo."})
 
+        # On valide les autres champs (type de preuve, description).
         serializer = AjouterPreuveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # On enregistre la preuve en base.
         preuve = PreuveLitige.objects.create(
             litige=litige,
             deposee_par=request.user,
@@ -288,9 +315,11 @@ class LitigeViewSet(viewsets.ModelViewSet):
     def prendre_en_charge(self, request, pk=None):
         litige = self.get_object()
 
+        # On ne peut prendre en charge qu'un litige encore en attente.
         if litige.statut != Litige.Statut.EN_ATTENTE:
             return Response({"detail": "Seul un litige en attente peut être pris en charge."}, status=400)
 
+        # Le litige passe "en cours" et on note quel admin s'en occupe.
         litige.statut = Litige.Statut.EN_COURS
         litige.traite_par = request.user
         litige.save(update_fields=["statut", "traite_par"])
@@ -313,9 +342,11 @@ class LitigeViewSet(viewsets.ModelViewSet):
 
     # Cette méthode applique une décision finale (résolution ou rejet) et prévient les parties.
     def _appliquer_decision(self, request, litige, nouveau_statut):
+        # Un litige déjà terminé ne peut pas recevoir une nouvelle décision.
         if litige.statut in STATUTS_TERMINAUX:
             raise ValidationError({"detail": "Ce litige a déjà été traité."})
 
+        # On valide le texte de la décision envoyé par l'admin.
         serializer = DecisionLitigeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -334,12 +365,14 @@ class LitigeViewSet(viewsets.ModelViewSet):
                 f"Litige \"{litige.motif}\" {nouveau_statut.lower()} : fonds débloqués",
             )
 
+        # On enregistre la décision, l'admin et la date.
         litige.statut = nouveau_statut
         litige.decision_admin = serializer.validated_data["decision_admin"]
         litige.traite_par = request.user
         litige.date_traitement = timezone.now()
         litige.save(update_fields=["statut", "decision_admin", "traite_par", "date_traitement"])
 
+        # On prévient le client et le prestataire.
         for destinataire in (litige.client, litige.prestataire.user):
             Notification.objects.create(
                 utilisateur=destinataire,
@@ -363,12 +396,14 @@ class LitigeViewSet(viewsets.ModelViewSet):
 
         litige = self.get_object()
 
+        # Une reprise n'est possible que si le litige est encore en attente ou en cours.
         if litige.statut in STATUTS_TERMINAUX or litige.statut in (
             Litige.Statut.REPRISE_DEMANDEE,
             Litige.Statut.REPRISE_EFFECTUEE,
         ):
             raise ValidationError({"detail": "Une reprise ne peut être demandée que pour un litige en attente ou en cours."})
 
+        # On valide le texte de la décision.
         serializer = DecisionLitigeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -377,6 +412,7 @@ class LitigeViewSet(viewsets.ModelViewSet):
         # sans effet si l'ouverture du litige les avait déjà gelés.
         geler_fonds_litige(litige)
 
+        # Le litige passe en "reprise demandée", avec une date limite = maintenant + délai.
         litige.statut = Litige.Statut.REPRISE_DEMANDEE
         litige.decision_admin = serializer.validated_data["decision_admin"]
         litige.traite_par = request.user
@@ -384,6 +420,7 @@ class LitigeViewSet(viewsets.ModelViewSet):
         litige.date_limite_reprise = litige.date_decision + timedelta(hours=settings.LITIGE_DELAI_REPRISE_HEURES)
         litige.save(update_fields=["statut", "decision_admin", "traite_par", "date_decision", "date_limite_reprise"])
 
+        # On prévient le prestataire (il doit refaire le travail) et le client.
         Notification.objects.create(
             utilisateur=litige.prestataire.user,
             titre="Reprise de prestation demandée",
@@ -418,25 +455,30 @@ class LitigeViewSet(viewsets.ModelViewSet):
 
         litige = self.get_object()
 
+        # Seul le prestataire du litige peut confirmer.
         if request.user.role != User.Role.PRESTATAIRE or litige.prestataire.user_id != request.user.id:
             raise PermissionDenied("Seul le prestataire concerné peut confirmer une reprise.")
 
+        # Il faut qu'une reprise soit vraiment attendue.
         if litige.statut != Litige.Statut.REPRISE_DEMANDEE:
             raise ValidationError({"detail": "Aucune reprise n'est en attente de confirmation pour ce litige (délai peut-être expiré)."})
 
         serializer = ConfirmerRepriseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # Si le prestataire a écrit un commentaire, on l'ajoute à sa description.
         description = serializer.validated_data.get("description", "").strip()
         if description:
             litige.description_prestataire = (
                 f"{litige.description_prestataire}\n\n[Reprise confirmée] {description}".strip()
             )
 
+        # Le litige passe en "reprise effectuée".
         litige.statut = Litige.Statut.REPRISE_EFFECTUEE
         litige.date_confirmation_reprise = timezone.now()
         litige.save(update_fields=["statut", "date_confirmation_reprise", "description_prestataire"])
 
+        # On prévient le client.
         Notification.objects.create(
             utilisateur=litige.client,
             titre="Prestation refaite",
@@ -463,23 +505,28 @@ class LitigeViewSet(viewsets.ModelViewSet):
 
         litige = self.get_object()
 
+        # Réattribution seulement après expiration du délai de reprise.
         if litige.statut != Litige.Statut.DELAI_EXPIRE:
             raise ValidationError({"detail": "La réattribution n'est possible que si le délai de reprise est expiré."})
 
+        # On valide le nouveau prestataire choisi par l'admin.
         serializer = ReattribuerLitigeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         nouveau_prestataire = serializer.validated_data["nouveau_prestataire"]
 
+        # Le nouveau prestataire doit être différent de l'ancien et vérifié.
         if nouveau_prestataire.id == litige.prestataire_id:
             raise ValidationError({"nouveau_prestataire": "Le nouveau prestataire doit être différent du prestataire initial."})
         if nouveau_prestataire.statut_verification != ProfilPrestataire.StatutVerification.VERIFIE:
             raise ValidationError({"nouveau_prestataire": "Ce prestataire n'est pas encore vérifié par MIMOSY."})
 
+        # Partage de l'argent gelé : 75 % au nouveau, le reste à l'ancien.
         montant = litige.montant_concerne or 0
         if montant:
             part_nouveau = (montant * settings.LITIGE_REATTRIBUTION_PART_NOUVEAU).quantize(Decimal("0.01"))
             part_ancien = montant - part_nouveau
 
+            # On transfère la part du nouveau prestataire.
             transferer_fonds_geles(
                 litige.prestataire,
                 nouveau_prestataire,
@@ -488,6 +535,7 @@ class LitigeViewSet(viewsets.ModelViewSet):
                 f"Réattribution du litige \"{litige.motif}\" ({int(settings.LITIGE_REATTRIBUTION_PART_NOUVEAU * 100)}% transférés)",
                 f"Prestation reprise suite au litige \"{litige.motif}\" ({int(settings.LITIGE_REATTRIBUTION_PART_NOUVEAU * 100)}% perçus)",
             )
+            # On rend le reste à l'ancien prestataire.
             if part_ancien:
                 degeler_fonds_vers_disponible(
                     litige.prestataire,
@@ -496,6 +544,7 @@ class LitigeViewSet(viewsets.ModelViewSet):
                     f"Réattribution du litige \"{litige.motif}\" : part conservée ({100 - int(settings.LITIGE_REATTRIBUTION_PART_NOUVEAU * 100)}%)",
                 )
 
+        # On enregistre le changement de prestataire et la décision.
         litige.nouveau_prestataire = nouveau_prestataire
         litige.statut = Litige.Statut.REATTRIBUE
         nouveau_nom = f"{nouveau_prestataire.user.first_name} {nouveau_prestataire.user.last_name}".strip()
@@ -508,6 +557,7 @@ class LitigeViewSet(viewsets.ModelViewSet):
         litige.date_traitement = timezone.now()
         litige.save(update_fields=["nouveau_prestataire", "statut", "decision_admin", "traite_par", "date_traitement"])
 
+        # On prévient les trois personnes concernées.
         Notification.objects.create(
             utilisateur=litige.prestataire.user,
             titre="Prestation réattribuée",
@@ -542,6 +592,7 @@ class PreuveLitigeFichierView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    # GET : on cherche la preuve demandée.
     def get(self, request, pk):
         try:
             preuve = PreuveLitige.objects.select_related(
@@ -550,11 +601,13 @@ class PreuveLitigeFichierView(APIView):
         except PreuveLitige.DoesNotExist:
             return Response({"detail": "Preuve introuvable."}, status=404)
 
+        # Seuls un admin ou une partie du litige peuvent voir la preuve.
         if not (is_admin_user(request.user) or est_partie_prenante(request.user, preuve.litige)):
             raise PermissionDenied("Vous n'avez pas accès à cette preuve.")
 
         if not preuve.fichier:
             return Response({"detail": "Aucun fichier associé."}, status=404)
 
+        # On devine le type du fichier (PDF ou image) et on l'envoie.
         content_type = "application/pdf" if preuve.fichier.name.endswith(".pdf") else "image/jpeg"
         return FileResponse(preuve.fichier.open("rb"), content_type=content_type)

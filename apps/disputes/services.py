@@ -45,7 +45,9 @@ from apps.wallet.services import geler_fonds, geler_fonds_bloques
 def _montant_net_prestataire(paiement: Payment) -> Decimal:
     """Même calcul que apps.wallet.services.liberer_fonds_pour_prestation : montant payé moins la commission MIMOSY."""
 
+    # Commission = montant x taux (10 %), arrondie au centime.
     commission = (paiement.montant * settings.COMMISSION_TAUX).quantize(Decimal("0.01"))
+    # Le prestataire reçoit le montant moins la commission.
     return paiement.montant - commission
 
 
@@ -62,14 +64,17 @@ def geler_fonds_litige(litige) -> None:
     paiement MIMOSY associé, il n'y a alors simplement rien à bloquer.
     """
 
+    # Déjà gelés : on ne fait rien (on ne gèle jamais deux fois).
     if litige.fonds_geles:
         return
 
+    # On cherche le dernier paiement réussi de la prestation contestée.
     paiement = (
         Payment.objects.filter(demande_prestation=litige.demande_prestation, statut=Payment.Statut.REUSSI)
         .order_by("-date_creation")
         .first()
     )
+    # Pas de paiement MIMOSY : rien à geler.
     if paiement is None:
         return
 
@@ -84,6 +89,7 @@ def geler_fonds_litige(litige) -> None:
         # Fonds déjà libérés : on gèle depuis le solde disponible, comme avant.
         montant_gele = geler_fonds(litige.prestataire, _montant_net_prestataire(paiement), litige.id, description)
 
+    # On note le montant gelé sur le litige.
     litige.montant_concerne = montant_gele
     litige.fonds_geles = True
     litige.save(update_fields=["montant_concerne", "fonds_geles"])
@@ -98,6 +104,7 @@ def analyser_litige(litige) -> dict:
     l'administrateur qui prend la décision finale.
     """
 
+    # On sépare les preuves déposées par le client et par le prestataire.
     preuves = list(litige.preuves.all())
     preuves_client = [preuve for preuve in preuves if preuve.deposee_par_id == litige.client_id]
     preuves_prestataire = [
@@ -105,11 +112,13 @@ def analyser_litige(litige) -> dict:
         if preuve.deposee_par_id == litige.prestataire.user_id
     ]
 
+    # Les constats de base : combien de pièces de chaque côté.
     findings = [
         f"{len(preuves_client)} pièce(s) déposée(s) par le client.",
         f"{len(preuves_prestataire)} pièce(s) déposée(s) par le prestataire.",
     ]
 
+    # Les avertissements : ce qui manque dans le dossier.
     warnings = []
     if not litige.description_client:
         warnings.append("Aucune description fournie par le client.")
@@ -120,6 +129,7 @@ def analyser_litige(litige) -> dict:
     if not preuves_prestataire:
         warnings.append("Le prestataire n'a déposé aucune pièce justificative.")
 
+    # Nombre de jours depuis l'ouverture du litige.
     anciennete_jours = (timezone.now() - litige.date_creation).days
     if anciennete_jours >= 7:
         warnings.append(f"Ce litige est ouvert depuis {anciennete_jours} jours sans décision.")
@@ -159,6 +169,7 @@ def analyser_litige(litige) -> dict:
     ])
     completude = round(elements_presents / 4, 2)
 
+    # On renvoie la synthèse (toujours à relire par un humain).
     return {
         "status": "dossier_complet" if completude == 1.0 else "dossier_incomplet",
         "confidence": completude,

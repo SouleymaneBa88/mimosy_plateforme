@@ -1,3 +1,5 @@
+# Tests des devis : création des demandes de devis, réponses des prestataires,
+# acceptation / refus par le client et droits d'accès de chacun.
 from datetime import timedelta
 
 from django.urls import reverse

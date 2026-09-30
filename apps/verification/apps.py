@@ -3,6 +3,7 @@ from django.apps import AppConfig
 # On importe logging pour journaliser les événements de démarrage.
 import logging
 
+# Le logger de ce fichier.
 logger = logging.getLogger(__name__)
 
 
@@ -11,6 +12,7 @@ class VerificationConfig(AppConfig):
     # Le nom complet de l'application, utilisé par Django en interne.
     name = 'apps.verification'
 
+    # ready() est appelée automatiquement quand Django a fini de démarrer.
     def ready(self):
         """
         Pré-charge le modèle TrOCR au démarrage du serveur Django lorsque
@@ -50,6 +52,7 @@ class VerificationConfig(AppConfig):
         # warmup déclencheront le chargement via lru_cache et attendront.
         import threading
 
+        # Fonction lancée dans un thread séparé : elle charge le modèle d'IA.
         def _charger_modele():
             try:
                 from apps.verification.services import get_ocr_pipeline
@@ -65,5 +68,6 @@ class VerificationConfig(AppConfig):
                     "Le modèle sera chargé à la première requête de vérification."
                 )
 
+        # On lance le thread (daemon=True : il ne bloque pas l'arrêt du serveur).
         t = threading.Thread(target=_charger_modele, daemon=True, name="trocr-warmup")
         t.start()

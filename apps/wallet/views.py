@@ -177,6 +177,9 @@ class MesRetraitsView(APIView):
         if retrait.statut == Withdrawal.Statut.ECHOUE:
             donnees["detail"] = getattr(retrait, "message_fournisseur", "") or "Le retrait a été refusé. Votre solde a été recrédité."
             return Response(donnees, status=status.HTTP_400_BAD_REQUEST)
+        # Démonstration : on dit explicitement qu'aucun déboursement n'a eu lieu.
+        if retrait.statut == Withdrawal.Statut.SIMULE:
+            donnees["detail"] = getattr(retrait, "message_fournisseur", "")
         return Response(donnees, status=status.HTTP_201_CREATED)
 
 

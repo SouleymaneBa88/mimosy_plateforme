@@ -12,6 +12,7 @@ from .models import Notification
 class NotificationAPITests(APITestCase):
     """Un utilisateur ne voit et ne marque comme lues que ses propres notifications."""
 
+    # Avant chaque test : on crée des utilisateurs et des notifications.
     def setUp(self):
         self.user = User.objects.create_user(
             username="notif_user",
@@ -45,10 +46,12 @@ class NotificationAPITests(APITestCase):
             type=Notification.Type.LITIGE,
         )
 
+    # Vérifie qu'un visiteur non connecté ne voit aucune notification.
     def test_anonyme_ne_voit_aucune_notification(self):
         response = self.client.get(reverse("notification-list"))
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    # Vérifie qu'un utilisateur ne voit que ses propres notifications.
     def test_utilisateur_ne_voit_que_ses_propres_notifications(self):
         self.client.force_authenticate(user=self.user)
         response = self.client.get(reverse("notification-list"))
@@ -60,6 +63,7 @@ class NotificationAPITests(APITestCase):
         self.assertIn(str(self.notification.id), ids)
         self.assertNotIn(str(self.notification_autre_user.id), ids)
 
+    # Vérifie qu'on peut marquer une notification comme lue.
     def test_marquer_une_notification_comme_lue(self):
         self.client.force_authenticate(user=self.user)
         url = reverse("notification-marquer-lue", kwargs={"pk": self.notification.id})
@@ -80,6 +84,7 @@ class NotificationAPITests(APITestCase):
         self.notification_autre_user.refresh_from_db()
         self.assertFalse(self.notification_autre_user.lu)
 
+    # Vérifie qu'on peut marquer toutes ses notifications comme lues.
     def test_marquer_toutes_les_notifications_comme_lues(self):
         Notification.objects.create(
             utilisateur=self.user,

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 # On importe logging pour tracer la réponse de PayDunya (sans secret).
 import logging
+# On importe uuid pour construire la référence d'un retrait de démonstration.
+import uuid
 
 # On importe les réglages du projet Django (settings.py).
 from django.conf import settings
@@ -233,6 +235,20 @@ class PayDunyaPaymentProvider(PaymentProvider):
                 message=f"Moyen de retrait '{withdrawal.provider}' non pris en charge par PayDunya.",
             )
 
+        # Démonstration (mode test uniquement) : PayDunya n'offre aucun
+        # déboursement de test, on ne l'appelle donc pas et on le dit.
+        if payout_demo_actif():
+            logger.info("Retrait %s : simulation de démonstration, aucun appel PayDunya.", withdrawal.id)
+            return ResultatProvider(
+                reussi=False,
+                simule=True,
+                reference_externe=f"DEMO-WD-{uuid.uuid4().hex[:12]}",
+                message=(
+                    "Simulation de démonstration : aucun déboursement PayDunya n'a été "
+                    "effectué (le déboursement PayDunya exige des clés LIVE)."
+                ),
+            )
+
         # On tente de créer le client PayDunya avec les credentials configurés.
         try:
             client = PayDunyaClient()
@@ -254,6 +270,16 @@ class PayDunyaPaymentProvider(PaymentProvider):
 
         # Si PayDunya refuse la réservation, on renvoie un échec explicite.
         if facture.get("response_code") != "00":
+            # Cas connu : des clés de test envoyées à l'API de déboursement,
+            # qui n'accepte que des clés LIVE. Expliqué dans les journaux
+            # serveur (jamais les clés elles-mêmes), pas au prestataire.
+            if not _mode_live():
+                logger.warning(
+                    "Déboursement PayDunya refusé (response_code=%s) en PAYDUNYA_MODE=test : "
+                    "l'API de déboursement n'accepte que des clés LIVE. Pour une démonstration, "
+                    "activer PAYDUNYA_PAYOUT_DEMO=true.",
+                    facture.get("response_code"),
+                )
             return ResultatProvider(
                 reussi=False,
                 reference_externe=None,
@@ -393,9 +419,20 @@ _STATUTS_PAYDUNYA = {
 }
 
 
+# Cette fonction indique si PayDunya est configuré en mode réel.
+def _mode_live() -> bool:
+    return settings.PAYDUNYA_MODE == "live"
+
+
 # Cette fonction indique si les paiements passent par SoftPay (live) ou par le checkout (test).
 def _softpay_actif() -> bool:
-    return settings.PAYDUNYA_MODE == "live"
+    return _mode_live()
+
+
+# Cette fonction indique si les retraits sont simulés (démonstration).
+def payout_demo_actif() -> bool:
+    """Jamais en mode live, même si PAYDUNYA_PAYOUT_DEMO=true : un vrai retrait n'est jamais simulé."""
+    return bool(getattr(settings, "PAYDUNYA_PAYOUT_DEMO", False)) and not _mode_live()
 
 
 # Cette fonction traduit un statut PayDunya ; tout statut inconnu reste "inconnu".

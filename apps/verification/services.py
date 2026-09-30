@@ -206,14 +206,18 @@ def _charger_ocr_pipeline():
         RAM insuffisante).
     """
 
+    # On charge les briques du modèle TrOCR (lecture de texte dans une image).
     from transformers import RobertaTokenizer, TrOCRProcessor, VisionEncoderDecoderModel
     from transformers.models.vit.image_processing_pil_vit import ViTImageProcessorPil
 
     logger.info("Chargement du modèle OCR : %s", OCR_MODEL)
+    # processor = prépare l'image ; tokenizer = transforme les chiffres du modèle en texte.
     image_processor = ViTImageProcessorPil.from_pretrained(OCR_MODEL)
     tokenizer = RobertaTokenizer.from_pretrained(OCR_MODEL)
     processor = TrOCRProcessor(image_processor=image_processor, tokenizer=tokenizer)
+    # model = le réseau de neurones lui-même.
     model = VisionEncoderDecoderModel.from_pretrained(OCR_MODEL)
+    # eval() : mode "utilisation" (pas d'entraînement).
     model.eval()
     return processor, model
 
@@ -229,15 +233,18 @@ RATIO_CARTE_ID1 = 85.6 / 54.0
 LARGEUR_CARTE_REDRESSEE = 1600
 
 
+# Transforme un segment (2 points) en droite d'équation a*x + b*y = c.
 def _droite(segment):
     x1, y1, x2, y2 = map(float, segment)
     a, b = y2 - y1, x1 - x2
     return a, b, a * x1 + b * y1
 
 
+# Calcule le point où deux droites se croisent (None si elles sont parallèles).
 def _intersection(d1, d2):
     a1, b1, c1 = d1
     a2, b2, c2 = d2
+    # Déterminant : s'il vaut 0, les droites sont parallèles.
     det = a1 * b2 - a2 * b1
     if abs(det) < 1e-6:
         return None
@@ -262,18 +269,24 @@ def detecter_carte(image: Image.Image) -> Optional[Image.Image]:
     import cv2
     import numpy as np
 
+    # On convertit l'image au format utilisé par OpenCV.
     img = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
     hauteur, largeur = img.shape[:2]
+    # On réduit l'image à 800 px maximum pour aller plus vite.
     echelle = 800 / max(hauteur, largeur)
     petit = cv2.resize(img, None, fx=echelle, fy=echelle, interpolation=cv2.INTER_AREA)
     ph, pw = petit.shape[:2]
 
+    # Niveaux de gris + léger flou pour enlever le bruit.
     gris = cv2.GaussianBlur(cv2.cvtColor(petit, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    # Canny : détecte les bords (changements brusques de couleur).
     bords = cv2.Canny(gris, 30, 100)
+    # Hough : trouve les longs segments droits parmi ces bords.
     segments = cv2.HoughLinesP(bords, 1, np.pi / 180, threshold=50, minLineLength=int(0.12 * pw), maxLineGap=25)
     if segments is None:
         return None
 
+    # On range chaque segment : plutôt horizontal ou plutôt vertical.
     horizontaux, verticaux = [], []
     for seg in np.asarray(segments).reshape(-1, 4):
         angle = abs(np.degrees(np.arctan2(seg[3] - seg[1], seg[2] - seg[0]))) % 180
@@ -282,14 +295,18 @@ def detecter_carte(image: Image.Image) -> Optional[Image.Image]:
             horizontaux.append((longueur, seg))
         elif 70 < angle < 110:
             verticaux.append((longueur, seg))
+    # On garde seulement les 12 plus longs de chaque sorte.
     horizontaux = [seg for _, seg in sorted(horizontaux, key=lambda t: -t[0])[:12]]
     verticaux = [seg for _, seg in sorted(verticaux, key=lambda t: -t[0])[:12]]
 
+    # On "épaissit" les bords pour tolérer un petit décalage.
     proches = cv2.dilate(bords, np.ones((5, 5), np.uint8))
     meilleur, meilleur_score = None, None
 
+    # On essaie toutes les combinaisons de 2 bords horizontaux + 2 bords verticaux.
     for h1, h2 in itertools.combinations(horizontaux, 2):
         for v1, v2 in itertools.combinations(verticaux, 2):
+            # Les 4 coins = les croisements entre ces 4 droites.
             points = [_intersection(dh, dv) for dh in (_droite(h1), _droite(h2)) for dv in (_droite(v1), _droite(v2))]
             if any(p is None for p in points):
                 continue
@@ -297,32 +314,42 @@ def detecter_carte(image: Image.Image) -> Optional[Image.Image]:
             somme, diff = pts.sum(1), np.diff(pts, axis=1).ravel()
             # Ordre : haut-gauche, haut-droite, bas-droite, bas-gauche.
             coins = np.array([pts[somme.argmin()], pts[diff.argmin()], pts[somme.argmax()], pts[diff.argmax()]], dtype="float32")
+            # On ignore les formes qui sortent de l'image.
             if (coins < -5).any() or (coins[:, 0] > pw + 5).any() or (coins[:, 1] > ph + 5).any():
                 continue
 
+            # Largeur et hauteur moyennes du quadrilatère.
             larg = (np.linalg.norm(coins[1] - coins[0]) + np.linalg.norm(coins[2] - coins[3])) / 2
             haut = (np.linalg.norm(coins[3] - coins[0]) + np.linalg.norm(coins[2] - coins[1])) / 2
             if haut < 1:
                 continue
+            # Le rapport largeur/hauteur doit ressembler à une carte,
+            # et la taille doit être raisonnable (entre 8 % et 95 % de l'image).
             ratio = larg / haut
             aire = cv2.contourArea(coins) / (pw * ph)
             if not (1.35 <= ratio <= 1.85) or not (0.08 <= aire <= 0.95):
                 continue
 
+            # On dessine le contour et on mesure quelle part tombe vraiment sur des bords.
             trace = np.zeros_like(bords)
             cv2.polylines(trace, [np.int32(coins)], True, 255, 1)
             total = cv2.countNonZero(trace)
             appui = cv2.countNonZero(cv2.bitwise_and(trace, proches)) / total if total else 0
+            # Moins de 55 % du contour appuyé sur des bords : pas convaincant.
             if appui < 0.55:
                 continue
 
+            # Score : bon appui + grande taille + proportions proches d'une vraie carte.
             score = appui + 0.5 * aire - 0.5 * abs(ratio - RATIO_CARTE_ID1)
             if meilleur_score is None or score > meilleur_score:
+                # On garde le meilleur, en remettant les coins à l'échelle de l'image d'origine.
                 meilleur, meilleur_score = coins / echelle, score
 
+    # Aucune carte trouvée.
     if meilleur is None:
         return None
 
+    # On "redresse" la carte : on la projette sur un rectangle bien droit.
     L = LARGEUR_CARTE_REDRESSEE
     H = round(L / RATIO_CARTE_ID1)
     cible = np.array([[0, 0], [L - 1, 0], [L - 1, H - 1], [0, H - 1]], dtype="float32")
@@ -338,10 +365,12 @@ def _image_de_la_carte(image: Image.Image) -> Optional[Image.Image]:
     le prestataire). Un format 16:9 ou 4:3 n'est jamais pris pour une carte :
     seul un rapport proche du format ID-1 (1,59) est accepté sans recadrage.
     """
+    # On essaie d'abord de trouver la carte dans la photo.
     carte = detecter_carte(image)
     if carte is not None:
         return carte
 
+    # Sinon, si l'image entière a déjà les proportions d'une carte, on l'utilise telle quelle.
     largeur, hauteur = image.size
     if hauteur and 1.45 <= largeur / hauteur <= 1.70:
         echelle = LARGEUR_CARTE_REDRESSEE / largeur
@@ -367,6 +396,7 @@ def detecter_segments_texte(carte: Image.Image) -> list[list[tuple[int, int, int
     import cv2
     import numpy as np
 
+    # On passe l'image en niveaux de gris.
     gris = cv2.cvtColor(np.array(carte.convert("RGB")), cv2.COLOR_RGB2GRAY)
     hauteur, largeur = gris.shape
 
@@ -380,6 +410,7 @@ def detecter_segments_texte(carte: Image.Image) -> list[list[tuple[int, int, int
     # On écarte tout ce qui est plus haut qu'une ligne de texte (photos,
     # emblème, drapeau) : ces zones ne contiennent pas de texte à lire.
     nb, etiquettes, stats, _ = cv2.connectedComponentsWithStats(encre, 8)
+    # On ne garde que les petites taches de la taille d'une lettre.
     texte = np.zeros_like(encre)
     for i in range(1, nb):
         _, _, _, h, aire = stats[i]
@@ -389,8 +420,10 @@ def detecter_segments_texte(carte: Image.Image) -> list[list[tuple[int, int, int
     # On relie les lettres d'un même groupe de mots par une dilatation
     # horizontale, assez courte pour ne pas relier deux colonnes.
     relie = cv2.dilate(texte, cv2.getStructuringElement(cv2.MORPH_RECT, (int(0.03 * largeur), 5)))
+    # On récupère le rectangle autour de chaque groupe de mots.
     contours, _ = cv2.findContours(relie, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     boites = []
+    # On garde les rectangles qui ont une hauteur de ligne de texte et sont plus larges que hauts.
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         if 0.018 * hauteur <= h <= 0.09 * hauteur and w >= 1.5 * h:
@@ -695,6 +728,7 @@ def _extraire_numero_document(texte_brut: str) -> Optional[str]:
     """
     lignes = [ligne.strip() for ligne in texte_brut.splitlines()]
 
+    # Cherche dans un texte une suite de chiffres (au moins 6) qui ressemble à un numéro.
     def numero_dans(texte: str) -> Optional[str]:
         trouve = re.search(r"\d[\d ]*\d", texte)
         if trouve and sum(c.isdigit() for c in trouve.group()) >= 6:
@@ -1066,6 +1100,7 @@ def analyser_document(document) -> None:
     # seulement, jamais de contenu). Uniquement si l'analyse a vraiment lieu.
     from apps.realtime.evenements import publier_verification_etape
 
+    # Envoie l'étape en cours au prestataire (seulement si l'IA est active).
     def annoncer(etape):
         if ia_active():
             publier_verification_etape(document, etape)

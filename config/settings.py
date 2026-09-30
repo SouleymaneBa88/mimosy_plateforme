@@ -10,6 +10,16 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+# ------------------------------------------------------------------
+# En français simple :
+# Ce fichier contient TOUS les réglages du backend MIMOSY :
+# base de données, sécurité, applications installées, JWT,
+# temps réel, paiement PayDunya, IA, etc.
+#
+# La plupart des valeurs sont lues dans les "variables d'environnement"
+# (fichier .env ou .env.docker). Ainsi, on ne met jamais de mot de passe
+# ou de clé secrète directement dans le code.
+# ------------------------------------------------------------------
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -17,8 +27,11 @@ from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 import os
 
+# Charge le fichier .env (s'il existe) dans les variables d'environnement.
 load_dotenv()
 
+# BASE_DIR = le dossier back_Mimosy/. On s'en sert pour construire les
+# chemins (media, fichiers statiques...).
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -57,8 +70,11 @@ def env_list(nom_variable, valeur_defaut=""):
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: don't run with debug turned on in production!
+# DEBUG=True : mode développement (messages d'erreur détaillés).
+# En production, il faut absolument DEBUG=False.
 DEBUG = env_bool("DEBUG", True)
 
+# La clé secrète sert à signer les données sensibles (sessions, jetons...).
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
@@ -76,11 +92,14 @@ if not SECRET_KEY:
             "d'environnement lorsque DEBUG=False."
         )
 
+# Liste des noms de domaine autorisés à appeler ce serveur.
 ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 
 # Application definition
 
+# Liste des applications chargées par Django. Chaque dossier de apps/
+# correspond à une partie du métier (comptes, devis, paiement...).
 INSTALLED_APPS = [
     # Daphne doit être avant django.contrib.staticfiles : il remplace alors la
     # commande « runserver » par un serveur ASGI, capable de gérer HTTP et
@@ -123,6 +142,10 @@ INSTALLED_APPS = [
     # token au moment de la déconnexion (voir apps.accounts.views.LogoutView).
     "rest_framework_simplejwt.token_blacklist",
 ]
+# Réglages de Django REST Framework (DRF), la librairie qui fabrique l'API :
+#  - authentification par jeton JWT ;
+#  - par défaut, il faut être connecté pour appeler l'API ;
+#  - limitation du nombre de requêtes (anti-abus).
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -150,6 +173,7 @@ REST_FRAMEWORK = {
         "ws_ticket": os.getenv("THROTTLE_RATE_WS_TICKET", "30/min"),
     },
 }
+# Réglages de la documentation automatique de l'API (Swagger, /api/docs/).
 SPECTACULAR_SETTINGS = {
     "TITLE": "MIMOSY API",
     "DESCRIPTION": "API de la plateforme MIMOSY de mise en relation entre clients et prestataires.",
@@ -174,6 +198,8 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+# Les "middlewares" sont des filtres qui s'appliquent à chaque requête,
+# dans l'ordre : CORS, sécurité, session, CSRF, authentification...
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -184,6 +210,8 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+# CORS : liste des sites (le frontend Vue) qui ont le droit d'appeler l'API
+# depuis le navigateur.
 CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5173,http://localhost:5174,"
@@ -199,8 +227,10 @@ CORS_ALLOWED_ORIGINS = env_list(
 # vide tant qu'aucun domaine de production n'est défini.
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
+# Fichier qui contient la liste principale des URL.
 ROOT_URLCONF = 'config.urls'
 
+# Réglages des templates HTML (utilisés surtout par l'admin Django).
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -216,6 +246,7 @@ TEMPLATES = [
     },
 ]
 
+# Point d'entrée pour un serveur WSGI classique (HTTP seulement).
 WSGI_APPLICATION = 'config.wsgi.application'
 
 # ------------------------------------------------------------------
@@ -287,6 +318,8 @@ else:
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+# Connexion à la base de données PostgreSQL. Les informations
+# (nom, utilisateur, mot de passe) viennent des variables d'environnement.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -306,6 +339,8 @@ DATABASES = {
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
 
+# Règles de sécurité appliquées aux mots de passe (longueur minimale,
+# pas trop simple, pas uniquement des chiffres, etc.).
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -325,6 +360,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/
 
+# Langue et fuseau horaire. USE_TZ=True : les dates sont stockées en UTC.
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -337,12 +373,15 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
+# Adresse web des fichiers statiques (CSS/JS de l'admin, Swagger).
 STATIC_URL = 'static/'
 # Dossier où « collectstatic » rassemble les fichiers statiques (admin,
 # documentation de l'API) pour qu'un serveur web (nginx) les serve en
 # production. Sans effet en développement (DEBUG=True).
 STATIC_ROOT = Path(os.getenv("STATIC_ROOT", BASE_DIR / "staticfiles"))
 
+# Fichiers envoyés par les utilisateurs (photos, documents...) :
+# MEDIA_URL = adresse web, MEDIA_ROOT = dossier sur le disque.
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
@@ -370,6 +409,8 @@ EMAIL_BACKEND = os.getenv(
     "django.core.mail.backends.console.EmailBackend",
 )
 
+# On utilise notre propre modèle d'utilisateur (apps/accounts/models.py)
+# au lieu de celui fourni par Django.
 AUTH_USER_MODEL = "accounts.User"
 
 # Toujours actifs : ils ne dépendent pas d'un certificat HTTPS et ne
@@ -421,6 +462,33 @@ AVIS_SEUIL_CONFIANCE = float(os.getenv("AVIS_SEUIL_CONFIANCE", "0.70"))
 # documents d'identité (voir apps.verification.services) : désactivée par
 # défaut, à activer explicitement une fois l'infrastructure prête.
 VERIFICATION_IA_ACTIVE = os.getenv("VERIFICATION_IA_ACTIVE", "false").lower() == "true"
+
+# Fallback IA de la recherche intelligente (voir apps.services.suggestions_ia) :
+# appelé seulement quand la recherche classique ne trouve rien, pour proposer
+# des services/catégories RÉELS du catalogue. Désactivé par défaut, comme les
+# autres analyses IA : sans lui, la recherche fonctionne normalement.
+RECHERCHE_IA_ACTIVE = os.getenv("RECHERCHE_IA_ACTIVE", "false").lower() == "true"
+# Clé de l'API Claude (Anthropic). SECRET : uniquement dans .env, jamais dans le code.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+RECHERCHE_IA_MODELE = os.getenv("RECHERCHE_IA_MODELE", "claude-opus-5")
+# Secondes maximum d'attente de l'IA avant de répondre sans suggestion.
+RECHERCHE_IA_TIMEOUT = float(os.getenv("RECHERCHE_IA_TIMEOUT", "15"))
+# Durée de conservation des suggestions pour une même requête (secondes).
+RECHERCHE_IA_CACHE_SECONDES = int(os.getenv("RECHERCHE_IA_CACHE_SECONDES", "3600"))
+
+# Recherche sémantique locale : embeddings, pas IA générative. Désactivée par
+# défaut afin de ne pas télécharger le modèle dans un environnement qui ne
+# souhaite pas l'utiliser. Après téléchargement, LOCAL_SEULEMENT=true permet
+# un fonctionnement hors ligne.
+RECHERCHE_SEMANTIQUE_ACTIVE = os.getenv("RECHERCHE_SEMANTIQUE_ACTIVE", "false").lower() == "true"
+RECHERCHE_SEMANTIQUE_MODELE = os.getenv(
+    "RECHERCHE_SEMANTIQUE_MODELE", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+RECHERCHE_SEMANTIQUE_LOCAL_SEULEMENT = os.getenv("RECHERCHE_SEMANTIQUE_LOCAL_SEULEMENT", "false").lower() == "true"
+# Score = cosinus à 80 % + règles à 20 % maximum. En dessous de ce seuil,
+# aucun résultat n'est affiché comme pertinent.
+RECHERCHE_SEMANTIQUE_SEUIL = float(os.getenv("RECHERCHE_SEMANTIQUE_SEUIL", "0.58"))
+RECHERCHE_SEMANTIQUE_CACHE_SECONDES = int(os.getenv("RECHERCHE_SEMANTIQUE_CACHE_SECONDES", "86400"))
 
 # Seuil minimal de ressemblance (SequenceMatcher.ratio) en dessous duquel
 # un champ extrait de la CNI est considéré comme ne correspondant pas aux
@@ -496,6 +564,17 @@ PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
 # le frontend ne peut jamais transmettre ni influencer ce choix.
 PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")
 
+# Démonstration du retrait SANS déboursement PayDunya. L'API de déboursement
+# PayDunya (api/v2/disburse) n'accepte que des clés LIVE : avec des clés de
+# test, elle répond "LIVE Private Key and Token combination is invalid",
+# il n'existe pas de payout de test. Activé, ce mode fait passer le retrait
+# par tout le parcours interne (validation, déduction verrouillée,
+# transaction, idempotence) puis le marque SIMULE — jamais REUSSI, et sans
+# appeler PayDunya. N'a AUCUN effet si PAYDUNYA_MODE=live : un retrait réel
+# ne peut jamais être remplacé par une simulation (voir
+# apps.wallet.providers.paydunya.payout_demo_actif).
+PAYDUNYA_PAYOUT_DEMO = os.getenv("PAYDUNYA_PAYOUT_DEMO", "false").lower() == "true"
+
 # URLs que PayDunya appelle depuis ses propres serveurs (jamais depuis
 # le navigateur du client) pour confirmer, de façon asynchrone, l'issue
 # d'un paiement ou d'un déboursement. Doivent être des URLs absolues et
@@ -516,6 +595,7 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
 # les autres journaux (Django, autres apps) gardent leur comportement.
 # Le code du wallet ne journalise jamais de clé PayDunya, de hash, ni de
 # valeur de token de facture (voir apps/wallet/services.py).
+# Configuration des journaux (logs) affichés dans le terminal.
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

@@ -73,6 +73,7 @@ def calculer_score_confiance(profil) -> dict:
         explication), et la liste des malus appliqués.
     """
 
+    # On calcule les points de chaque facteur séparément.
     facteurs: dict[str, FacteurScore] = {
         "identite": _facteur_identite(profil),
         "documents": _facteur_documents(profil),
@@ -82,9 +83,12 @@ def calculer_score_confiance(profil) -> dict:
         "avis": _facteur_avis(profil),
     }
 
+    # On calcule le malus (points retirés à cause des litiges).
     malus_incidents = _malus_incidents(profil)
 
+    # Score = somme des points des facteurs - malus.
     score_brut = sum(facteur["points"] for facteur in facteurs.values()) - malus_incidents["points"]
+    # On garde le score entre 0 et 100, puis on l'arrondit.
     score = round(max(0.0, min(100.0, score_brut)))
 
     return {
@@ -96,6 +100,7 @@ def calculer_score_confiance(profil) -> dict:
 
 # Cette fonction évalue le facteur "identité vérifiée".
 def _facteur_identite(profil) -> FacteurScore:
+    # Vérifié : tous les points. En attente : 30 % des points. Sinon : 0.
     if profil.statut_verification == "VERIFIE":
         points = POIDS_IDENTITE
         explication = "Identité vérifiée par un administrateur MIMOSY."
@@ -115,10 +120,12 @@ def _facteur_documents(profil) -> FacteurScore:
     # circulaire entre apps.trust et apps.verification au chargement.
     from apps.verification.models import DocumentIdentite
 
+    # On compte les documents validés, sauf la pièce d'identité (déjà comptée plus haut).
     nombre_valides = profil.documents_identite.filter(
         statut=DocumentIdentite.Statut.VALIDE,
     ).exclude(type_document=DocumentIdentite.TypeDocument.PIECE_IDENTITE).count()
 
+    # Ratio entre 0 et 1 : 0 document = 0, 2 documents ou plus = 1 (le maximum).
     ratio = min(nombre_valides, SEUIL_DOCUMENTS_MAX) / SEUIL_DOCUMENTS_MAX
     points = POIDS_DOCUMENTS * ratio
 
@@ -131,6 +138,7 @@ def _facteur_documents(profil) -> FacteurScore:
 
 # Cette fonction évalue le facteur "profil complété".
 def _facteur_profil_complete(profil) -> FacteurScore:
+    # On reprend le pourcentage de complétion du profil (0 à 100).
     pourcentage = calculer_completion(profil)["pourcentage"]
     points = POIDS_PROFIL_COMPLETE * (pourcentage / 100)
 
@@ -143,6 +151,7 @@ def _facteur_profil_complete(profil) -> FacteurScore:
 
 # Cette fonction évalue le facteur "activité réelle" (prestations terminées).
 def _facteur_activite(profil) -> FacteurScore:
+    # On compte les prestations terminées (10 ou plus = maximum des points).
     nombre_terminees = profil.demandes_recues.filter(statut="TERMINEE").count()
     ratio = min(nombre_terminees, SEUIL_ACTIVITE_MAX) / SEUIL_ACTIVITE_MAX
     points = POIDS_ACTIVITE * ratio
@@ -158,6 +167,7 @@ def _facteur_activite(profil) -> FacteurScore:
 def _facteur_fiabilite(profil) -> FacteurScore:
     total = profil.demandes_recues.count()
 
+    # Aucune demande reçue : on donne la moitié des points (on ne sait pas encore).
     if total == 0:
         return {
             "points": round(POIDS_FIABILITE * 0.5, 1),
@@ -165,7 +175,9 @@ def _facteur_fiabilite(profil) -> FacteurScore:
             "explication": "Pas encore assez de demandes reçues pour mesurer la fiabilité.",
         }
 
+    # Incidents = demandes annulées ou refusées.
     incidents = profil.demandes_recues.filter(Q(statut="ANNULEE") | Q(statut="REFUSEE")).count()
+    # Taux de fiabilité = part des demandes sans incident (entre 0 et 1).
     taux_fiabilite = 1 - (incidents / total)
     points = POIDS_FIABILITE * taux_fiabilite
 
@@ -178,9 +190,11 @@ def _facteur_fiabilite(profil) -> FacteurScore:
 
 # Cette fonction évalue le facteur "avis clients".
 def _facteur_avis(profil) -> FacteurScore:
+    # On calcule la note moyenne et le nombre d'avis publiés.
     resultat = profil.avis_recus.filter(statut="PUBLIE").aggregate(moyenne=Avg("note"), total=Count("id"))
     moyenne = resultat["moyenne"]
 
+    # Pas encore d'avis : la moitié des points.
     if not moyenne:
         return {
             "points": round(POIDS_AVIS * 0.5, 1),
@@ -188,6 +202,7 @@ def _facteur_avis(profil) -> FacteurScore:
             "explication": "Pas encore d'avis publié.",
         }
 
+    # Une moyenne de 5/5 donne tous les points.
     points = POIDS_AVIS * (moyenne / 5)
 
     return {
@@ -207,6 +222,7 @@ def _malus_incidents(profil) -> FacteurScore:
     """
 
     nombre_litiges_resolus = profil.litiges_recus.filter(statut="RESOLU").count()
+    # Chaque litige résolu retire 5 points, avec un maximum de 15.
     points = min(nombre_litiges_resolus * 5, MALUS_MAX_INCIDENTS)
 
     return {

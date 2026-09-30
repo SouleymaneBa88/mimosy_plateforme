@@ -29,19 +29,25 @@ Stockage :
     un ticket créé dans un process serait inconnu des autres.
 """
 
+# hashlib sert à calculer une empreinte (hash) du ticket.
 import hashlib
+# secrets génère des valeurs aléatoires sûres.
 import secrets
+# time donne l'heure actuelle (pour l'expiration).
 import time
 from typing import Optional
 
+# Le cache Django (mémoire ou Redis) où l'on garde les tickets.
 from django.core.cache import cache
 
 # Durée de validité d'un ticket, en secondes : juste le temps d'ouvrir la connexion.
 DUREE_TICKET = 30
 
+# Préfixe ajouté aux clés du cache pour les reconnaître.
 _PREFIXE_CLE = "realtime:ticket:"
 
 
+# Construit la clé du cache à partir du ticket.
 def _cle(ticket: str) -> str:
     # On ne stocke que l'empreinte du ticket, jamais le ticket lui-même : quelqu'un
     # qui lirait le contenu du cache ne pourrait pas s'en servir pour se connecter.
@@ -55,7 +61,9 @@ def creer_ticket(utilisateur) -> str:
     Entrée  : l'utilisateur authentifié par JWT.
     Sortie  : le ticket (chaîne aléatoire), à transmettre une seule fois au navigateur.
     """
+    # On génère une chaîne aléatoire impossible à deviner.
     ticket = secrets.token_urlsafe(32)
+    # On la garde dans le cache avec l'id de l'utilisateur et l'heure d'expiration.
     cache.set(
         _cle(ticket),
         {"utilisateur_id": utilisateur.pk, "expire_a": time.time() + DUREE_TICKET},
@@ -72,10 +80,12 @@ async def consommer_ticket(ticket: Optional[str]) -> Optional[int]:
     inconnu, expiré ou déjà utilisé. Dans tous les cas, le ticket ne peut plus
     servir après cet appel.
     """
+    # Pas de ticket, ou ticket anormalement long : refusé.
     if not ticket or len(ticket) > 100:
         return None
 
     cle = _cle(ticket)
+    # On cherche le ticket dans le cache.
     donnees = await cache.aget(cle)
     if donnees is None:
         return None

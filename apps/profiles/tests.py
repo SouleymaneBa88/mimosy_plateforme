@@ -1,3 +1,4 @@
+# Tests de l'API des profils prestataires et du calcul de complétion du profil.
 from decimal import Decimal
 
 from django.urls import reverse
@@ -14,6 +15,7 @@ from .models import ProfilPrestataire
 class ProfilPrestataireApiTests(APITestCase):
     """Vérifie les API publiques et privées des profils prestataires."""
 
+    # setUpTestData : crée les données UNE seule fois pour toute la classe (plus rapide que setUp).
     @classmethod
     def setUpTestData(cls):
         # Prestataire A
@@ -271,6 +273,7 @@ class ProfilPrestataireApiTests(APITestCase):
 class ProfilCompletionTests(APITestCase):
     """Vérifie le calcul de complétion et la règle de visibilité qui en découle."""
 
+    # Avant chaque test : on crée un prestataire avec un profil vide.
     def setUp(self):
         self.prestataire_user = User.objects.create_user(
             username="completion-prestataire",
@@ -286,6 +289,7 @@ class ProfilCompletionTests(APITestCase):
         self.categorie = Categorie.objects.create(nom="Peinture")
         self.service = Service.objects.create(categorie=self.categorie, nom="Peinture intérieure")
 
+    # Vérifie qu'un profil tout juste créé est incomplet.
     def test_profil_fraichement_cree_est_incomplet(self):
         from .services import calculer_completion
 
@@ -297,6 +301,7 @@ class ProfilCompletionTests(APITestCase):
         self.assertFalse(resultat["etapes"]["services"])
         self.assertLess(resultat["pourcentage"], 100)
 
+    # Vérifie qu'un profil devient publiable quand les 4 étapes obligatoires sont faites.
     def test_profil_devient_publiable_avec_les_quatre_etapes_obligatoires(self):
         from apps.locations.models import Localisation
 
@@ -363,6 +368,7 @@ class ProfilCompletionTests(APITestCase):
         self.assertFalse(resultat["est_publiable"])
         self.assertFalse(resultat["etapes"]["verification_identite"])
 
+    # Vérifie que l'API "mon profil" renvoie le pourcentage de complétion.
     def test_me_endpoint_expose_la_completion(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("prestataire-me"))
@@ -371,6 +377,7 @@ class ProfilCompletionTests(APITestCase):
         self.assertIn("completion", response.data)
         self.assertFalse(response.data["completion"]["est_publiable"])
 
+    # Vérifie qu'un prestataire au profil incomplet n'apparaît pas dans la liste publique.
     def test_prestataire_incomplet_absent_de_la_liste_publique(self):
         response = self.client.get(reverse("prestataire-list"))
 
@@ -378,6 +385,7 @@ class ProfilCompletionTests(APITestCase):
         ids = [item["id"] for item in response.data]
         self.assertNotIn(str(self.profil.id), ids)
 
+    # Vérifie que ses services n'apparaissent pas dans la recherche.
     def test_service_dun_profil_incomplet_absent_de_la_recherche(self):
         PrestataireService.objects.create(
             prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True
@@ -388,6 +396,7 @@ class ProfilCompletionTests(APITestCase):
         ids = {item["prestataire_id"] for item in response.data["results"]}
         self.assertNotIn(str(self.profil.id), ids)
 
+    # Vérifie qu'ils n'apparaissent pas non plus dans la recherche intelligente.
     def test_service_dun_profil_incomplet_absent_de_la_recherche_intelligente(self):
         PrestataireService.objects.create(
             prestataire=self.profil, service=self.service, prix=6000, unite="prestation", disponible=True

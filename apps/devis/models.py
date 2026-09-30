@@ -261,6 +261,7 @@ class LigneMateriau(models.Model):
 	# L'ordre d'affichage de la ligne dans le devis.
 	ordre = models.PositiveSmallIntegerField(default=0)
 
+	# Les lignes sont triées selon leur ordre d'affichage.
 	class Meta:
 		ordering = ["ordre", "id"]
 
@@ -269,5 +270,6 @@ class LigneMateriau(models.Model):
 	def montant(self):
 		return (self.quantite * self.prix_unitaire).quantize(Decimal("0.01"))
 
+	# Texte affiché pour une ligne (ex. dans l'admin) : "Robinet × 2".
 	def __str__(self):
 		return f"{self.designation} × {self.quantite}"

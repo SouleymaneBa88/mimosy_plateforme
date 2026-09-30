@@ -1,3 +1,5 @@
+# Tests des comptes : inscription, photo de profil, déconnexion,
+# limitation des tentatives de connexion et profil de l'utilisateur.
 import io
 from unittest import mock
 
@@ -151,6 +153,7 @@ def construire_image(format_image="JPEG", taille=(10, 10)):
 class ProfilePhotoSerializerTests(TestCase):
     """Tests de validation du contenu réel d'une photo de profil."""
 
+    # Avant chaque test : on crée un utilisateur.
     def setUp(self):
         self.user = User.objects.create_user(
             username="photo_test",
@@ -222,6 +225,7 @@ class ProfilePhotoSerializerTests(TestCase):
 class LogoutTests(APITestCase):
     """Vérifie que la déconnexion invalide bien le refresh token transmis."""
 
+    # Avant chaque test : on crée un utilisateur et on le connecte.
     def setUp(self):
         self.user = User.objects.create_user(
             username="logout_test",
@@ -273,6 +277,7 @@ class LogoutTests(APITestCase):
 class LoginThrottleTests(APITestCase):
     """Vérifie que les tentatives de connexion répétées sont limitées."""
 
+    # Avant chaque test : on vide le cache (compteurs de tentatives) et on crée un utilisateur.
     def setUp(self):
         cache.clear()
 
@@ -286,6 +291,7 @@ class LoginThrottleTests(APITestCase):
             role=User.Role.CLIENT,
         )
 
+    # Après chaque test : on vide le cache pour ne pas gêner les tests suivants.
     def tearDown(self):
         cache.clear()
 
@@ -325,6 +331,7 @@ class ProfileViewAPITests(APITestCase):
     n'existe (voir ProfileSerializer.read_only_fields).
     """
 
+    # Avant chaque test : on crée un utilisateur connecté.
     def setUp(self):
         self.user = User.objects.create_user(
             username="profile_patch_test",
@@ -337,6 +344,7 @@ class ProfileViewAPITests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
 
+    # Vérifie que le prénom et le nom sont modifiables.
     def test_le_nom_est_modifiable(self):
         response = self.client.patch(
             reverse("profile"),
@@ -363,6 +371,7 @@ class ProfileViewAPITests(APITestCase):
         self.assertEqual(self.user.email, "profile-patch@test.com")
         self.assertEqual(self.user.phone, "770000010")
 
+    # Vérifie que le rôle ne peut pas être modifié par l'utilisateur.
     def test_role_reste_protege(self):
         response = self.client.patch(reverse("profile"), {"role": User.Role.ADMIN}, format="json")
 
@@ -370,11 +379,13 @@ class ProfileViewAPITests(APITestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.role, User.Role.CLIENT)
 
+    # Vérifie qu'un visiteur non connecté ne peut pas voir de profil.
     def test_anonyme_ne_peut_pas_consulter_le_profil(self):
         self.client.force_authenticate(user=None)
         response = self.client.get(reverse("profile"))
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    # Vérifie l'envoi complet d'une photo de profil, du début à la fin.
     def test_upload_de_photo_de_profil_reussi_de_bout_en_bout(self):
         response = self.client.post(
             reverse("profile-photo"),

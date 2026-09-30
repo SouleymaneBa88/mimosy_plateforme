@@ -74,10 +74,12 @@ class DashboardStatsView(APIView):
     ne doit jamais nécessiter de charger 1 248 lignes en mémoire.
     """
 
+    # Il faut être connecté ET administrateur.
     permission_classes = [IsAuthenticated, IsAdminUserRole]
 
     # Cette méthode répond à une requête GET.
     def get(self, request):
+        # Demandes de prestation : total + nombre par statut, en une seule requête.
         demandes = DemandePrestation.objects.aggregate(
             total=Count("id"),
             en_attente=Count("id", filter=Q(statut=DemandePrestation.Statut.EN_ATTENTE)),
@@ -86,6 +88,7 @@ class DashboardStatsView(APIView):
             annulees=Count("id", filter=Q(statut=DemandePrestation.Statut.ANNULEE)),
         )
 
+        # Prestataires : total + nombre par statut de vérification.
         prestataires = ProfilPrestataire.objects.aggregate(
             total=Count("id"),
             verifies=Count("id", filter=Q(statut_verification=ProfilPrestataire.StatutVerification.VERIFIE)),
@@ -93,22 +96,26 @@ class DashboardStatsView(APIView):
             rejetes=Count("id", filter=Q(statut_verification=ProfilPrestataire.StatutVerification.REJETE)),
         )
 
+        # Avis : total + nombre en attente de modération.
         avis = Avis.objects.aggregate(
             total=Count("id"),
             en_attente=Count("id", filter=Q(statut=Avis.Statut.EN_ATTENTE)),
         )
 
+        # Signalements : total + nombre en attente.
         signalements = Signalement.objects.aggregate(
             total=Count("id"),
             en_attente=Count("id", filter=Q(statut=Signalement.Statut.EN_ATTENTE)),
         )
 
+        # Litiges : total + en attente + en cours.
         litiges = Litige.objects.aggregate(
             total=Count("id"),
             en_attente=Count("id", filter=Q(statut=Litige.Statut.EN_ATTENTE)),
             en_cours=Count("id", filter=Q(statut=Litige.Statut.EN_COURS)),
         )
 
+        # On renvoie toutes les statistiques regroupées par thème.
         return Response({
             "utilisateurs": {
                 "total": User.objects.count(),
@@ -146,10 +153,12 @@ class ActiviteRecenteView(APIView):
 
     # Cette méthode répond à une requête GET.
     def get(self, request):
+        # On lit le paramètre "limite" dans l'URL (15 par défaut).
         try:
             limite = int(request.query_params.get("limite", 15))
         except (TypeError, ValueError):
             limite = 15
+        # On force la limite entre 1 et 50.
         limite = max(1, min(limite, 50))
 
         # On ne récupère qu'un nombre restreint de lignes par source :
@@ -157,7 +166,9 @@ class ActiviteRecenteView(APIView):
         # quelques-unes après fusion.
         evenements = []
 
+        # Derniers utilisateurs inscrits.
         for utilisateur in User.objects.order_by("-date_joined")[:limite]:
+            # On traduit le rôle en mot lisible.
             role_libelle = "client" if utilisateur.role == User.Role.CLIENT else (
                 "prestataire" if utilisateur.role == User.Role.PRESTATAIRE else "administrateur"
             )
@@ -167,6 +178,7 @@ class ActiviteRecenteView(APIView):
                 "date": utilisateur.date_joined,
             })
 
+        # Dernières demandes de prestation.
         for demande in DemandePrestation.objects.select_related("client").order_by("-date_creation")[:limite]:
             evenements.append({
                 "type": "NOUVELLE_DEMANDE",
@@ -174,6 +186,7 @@ class ActiviteRecenteView(APIView):
                 "date": demande.date_creation,
             })
 
+        # Dernières demandes de devis.
         for devis in DemandeDevis.objects.select_related("client").order_by("-date_creation")[:limite]:
             evenements.append({
                 "type": "NOUVEAU_DEVIS",
@@ -181,6 +194,7 @@ class ActiviteRecenteView(APIView):
                 "date": devis.date_creation,
             })
 
+        # Derniers avis.
         for avis in Avis.objects.select_related("auteur").order_by("-date_creation")[:limite]:
             evenements.append({
                 "type": "NOUVEL_AVIS",
@@ -188,6 +202,7 @@ class ActiviteRecenteView(APIView):
                 "date": avis.date_creation,
             })
 
+        # Derniers signalements.
         for signalement in Signalement.objects.select_related("createur").order_by("-date_creation")[:limite]:
             evenements.append({
                 "type": "NOUVEAU_SIGNALEMENT",
@@ -195,6 +210,7 @@ class ActiviteRecenteView(APIView):
                 "date": signalement.date_creation,
             })
 
+        # Derniers litiges.
         for litige in Litige.objects.select_related("client", "prestataire__user").order_by("-date_creation")[:limite]:
             evenements.append({
                 "type": "NOUVEAU_LITIGE",
@@ -202,6 +218,7 @@ class ActiviteRecenteView(APIView):
                 "date": litige.date_creation,
             })
 
+        # Derniers paiements réussis.
         for paiement in Payment.objects.filter(statut=Payment.Statut.REUSSI).select_related("client").order_by("-date_modification")[:limite]:
             evenements.append({
                 "type": "PAIEMENT_REUSSI",
@@ -209,8 +226,10 @@ class ActiviteRecenteView(APIView):
                 "date": paiement.date_modification,
             })
 
+        # On trie tous les événements du plus récent au plus ancien.
         evenements.sort(key=lambda item: item["date"], reverse=True)
 
+        # On ne garde que les "limite" premiers.
         return Response({"resultats": evenements[:limite]})
 
 
@@ -234,16 +253,20 @@ class UserAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset filtré selon les paramètres de recherche.
     def get_queryset(self):
+        # On part de tous les utilisateurs, puis on applique les filtres demandés.
         queryset = self.queryset
 
+        # Filtre par rôle (CLIENT, PRESTATAIRE, ADMIN).
         role = self.request.query_params.get("role")
         if role:
             queryset = queryset.filter(role=role)
 
+        # Filtre actif / désactivé.
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() in ("1", "true", "yes"))
 
+        # Recherche texte dans le prénom, le nom, l'email ou le téléphone.
         recherche = self.request.query_params.get("recherche", "").strip()
         if recherche:
             queryset = queryset.filter(
@@ -265,8 +288,10 @@ class UserAdminViewSet(viewsets.ReadOnlyModelViewSet):
         UserStatutSerializer, qui n'expose que is_active).
         """
 
+        # On récupère l'utilisateur visé (erreur 404 s'il n'existe pas).
         utilisateur = self.get_object()
 
+        # On valide les données reçues (seulement is_active).
         serializer = UserStatutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         nouveau_statut = serializer.validated_data["is_active"]
@@ -279,6 +304,7 @@ class UserAdminViewSet(viewsets.ReadOnlyModelViewSet):
                 status=400,
             )
 
+        # On enregistre le nouveau statut.
         utilisateur.is_active = nouveau_statut
         utilisateur.save(update_fields=["is_active"])
 
@@ -298,6 +324,7 @@ class ClientAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset des clients, avec leurs statistiques.
     def get_queryset(self):
+        # On prend seulement les clients, avec leur nombre de demandes envoyées.
         queryset = (
             User.objects.filter(role=User.Role.CLIENT)
             .select_related("localisation_principale")
@@ -305,10 +332,12 @@ class ClientAdminViewSet(viewsets.ReadOnlyModelViewSet):
             .order_by("-date_joined")
         )
 
+        # Filtre actif / désactivé.
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() in ("1", "true", "yes"))
 
+        # Recherche texte dans le nom ou l'email.
         recherche = self.request.query_params.get("recherche", "").strip()
         if recherche:
             queryset = queryset.filter(
@@ -333,6 +362,7 @@ class PrestataireAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset des prestataires, avec leurs statistiques.
     def get_queryset(self):
+        # On prend les profils prestataires, avec leur nombre de services proposés.
         queryset = (
             ProfilPrestataire.objects
             .select_related("user", "user__localisation_principale")
@@ -340,18 +370,22 @@ class PrestataireAdminViewSet(viewsets.ReadOnlyModelViewSet):
             .order_by("user__last_name", "user__first_name")
         )
 
+        # Filtre par statut de vérification (VERIFIE, EN_ATTENTE...).
         statut_verification = self.request.query_params.get("statut_verification")
         if statut_verification:
             queryset = queryset.filter(statut_verification=statut_verification)
 
+        # Filtre compte actif / désactivé.
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(user__is_active=is_active.lower() in ("1", "true", "yes"))
 
+        # Filtre disponible / indisponible.
         disponibilite = self.request.query_params.get("disponibilite")
         if disponibilite is not None:
             queryset = queryset.filter(disponibilite=disponibilite.lower() in ("1", "true", "yes"))
 
+        # Recherche texte dans le nom ou l'email du prestataire.
         recherche = self.request.query_params.get("recherche", "").strip()
         if recherche:
             queryset = queryset.filter(
@@ -391,24 +425,29 @@ class DemandeAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset filtré des demandes de prestation.
     def get_queryset(self):
+        # Toutes les demandes, avec client, prestataire et service chargés en une fois.
         queryset = (
             DemandePrestation.objects
             .select_related("client", "prestataire__user", "service")
             .order_by("-date_creation")
         )
 
+        # Filtre par statut.
         statut = self.request.query_params.get("statut")
         if statut:
             queryset = queryset.filter(statut=statut)
 
+        # Filtre : demandes créées après cette date.
         date_debut = self.request.query_params.get("date_debut")
         if date_debut:
             queryset = queryset.filter(date_creation__date__gte=date_debut)
 
+        # Filtre : demandes créées avant cette date.
         date_fin = self.request.query_params.get("date_fin")
         if date_fin:
             queryset = queryset.filter(date_creation__date__lte=date_fin)
 
+        # Recherche texte dans le client, le prestataire ou la description.
         recherche = self.request.query_params.get("recherche", "").strip()
         if recherche:
             queryset = queryset.filter(
@@ -436,6 +475,7 @@ class DevisAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset filtré des demandes de devis.
     def get_queryset(self):
+        # Toutes les demandes de devis, avec leur nombre de réponses.
         queryset = (
             DemandeDevis.objects
             .select_related("client", "prestataire__user", "service")
@@ -443,6 +483,7 @@ class DevisAdminViewSet(viewsets.ReadOnlyModelViewSet):
             .order_by("-date_creation")
         )
 
+        # Filtre par statut.
         statut = self.request.query_params.get("statut")
         if statut:
             queryset = queryset.filter(statut=statut)
@@ -468,6 +509,8 @@ class RendezVousAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset des rendez-vous, avec l'annotation de conflit.
     def get_queryset(self):
+        # Sous-requête : autres rendez-vous actifs du même prestataire qui
+        # chevauchent ce rendez-vous (début de l'un avant la fin de l'autre).
         conflits = RendezVous.objects.filter(
             prestataire=OuterRef("prestataire"),
             statut__in=[RendezVous.Statut.EN_ATTENTE, RendezVous.Statut.CONFIRME],
@@ -475,6 +518,7 @@ class RendezVousAdminViewSet(viewsets.ReadOnlyModelViewSet):
             date_heure_fin__gt=OuterRef("date_heure_debut"),
         ).exclude(pk=OuterRef("pk"))
 
+        # On ajoute à chaque rendez-vous un champ "conflit" (True / False).
         queryset = (
             RendezVous.objects
             .select_related("client", "prestataire__user", "service")
@@ -482,6 +526,7 @@ class RendezVousAdminViewSet(viewsets.ReadOnlyModelViewSet):
             .order_by("-date_heure_debut")
         )
 
+        # Filtres par statut et par période.
         statut = self.request.query_params.get("statut")
         if statut:
             queryset = queryset.filter(statut=statut)
@@ -512,12 +557,15 @@ class LocalisationAdminViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Cette méthode construit le queryset filtré des localisations.
     def get_queryset(self):
+        # Toutes les localisations, les plus récemment mises à jour d'abord.
         queryset = Localisation.objects.select_related("user").order_by("-updated_at")
 
+        # Filtre par rôle de l'utilisateur.
         role = self.request.query_params.get("role")
         if role:
             queryset = queryset.filter(user__role=role)
 
+        # Filtre par ville (recherche partielle, sans tenir compte des majuscules).
         ville = self.request.query_params.get("ville", "").strip()
         if ville:
             queryset = queryset.filter(ville__icontains=ville)

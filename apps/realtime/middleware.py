@@ -13,14 +13,21 @@ si l'authentification échoue, la connexion est refusée sans jamais être
 ouverte. Aucune connexion anonyme ne reste ouverte.
 """
 
+# logging pour écrire dans les journaux.
 import logging
+# parse_qs lit les paramètres de l'URL (ex. ?ticket=abc).
 from urllib.parse import parse_qs
 
+# Permet d'appeler la base de données (code synchrone) depuis du code asynchrone.
 from channels.db import database_sync_to_async
+# Classe de base d'un middleware Channels.
 from channels.middleware import BaseMiddleware
+# Outil qui refuse proprement une connexion WebSocket (HTTP 403).
 from channels.security.websocket import WebsocketDenier
+# Donne le modèle User du projet.
 from django.contrib.auth import get_user_model
 
+# Fonction qui vérifie et détruit un ticket.
 from .tickets import consommer_ticket
 
 logger = logging.getLogger(__name__)
@@ -46,11 +53,15 @@ class TicketAuthMiddleware(BaseMiddleware):
     Au moindre échec : refus de la connexion (HTTP 403).
     """
 
+    # Méthode appelée pour chaque nouvelle connexion WebSocket.
     async def __call__(self, scope, receive, send):
+        # On lit le ticket dans l'URL : /ws/?ticket=...
         parametres = parse_qs(scope.get("query_string", b"").decode())
         ticket = (parametres.get("ticket") or [None])[0]
 
+        # On vérifie le ticket : on récupère l'identifiant de l'utilisateur (ou None).
         utilisateur_id = await consommer_ticket(ticket)
+        # On vérifie que ce compte existe encore et qu'il est actif.
         utilisateur = await _utilisateur_actif(utilisateur_id) if utilisateur_id else None
 
         if utilisateur is None:
@@ -58,5 +69,6 @@ class TicketAuthMiddleware(BaseMiddleware):
             logger.warning("WebSocket authentication failed (ticket absent, invalide, expiré ou déjà utilisé).")
             return await WebsocketDenier.as_asgi()(scope, receive, send)
 
+        # Tout est bon : on attache l'utilisateur à la connexion et on continue.
         scope["user"] = utilisateur
         return await super().__call__(scope, receive, send)
