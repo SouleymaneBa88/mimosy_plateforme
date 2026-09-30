@@ -215,6 +215,7 @@ class MesDocumentsIdentiteView(APIView):
 
     permission_classes = [IsAuthenticated, IsPrestataire]
 
+    # GET : renvoie tous les documents du prestataire, triés par type.
     def get(self, request):
         documents = DocumentIdentite.objects.filter(
             prestataire=request.user.profil_prestataire

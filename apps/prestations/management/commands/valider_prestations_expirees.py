@@ -12,14 +12,18 @@ qu'aucun accès ne touche. Elle est destinée à un cron système, par ex. :
 Une demande avec un litige en cours n'est jamais validée ni payée.
 """
 
+# Classe de base de toutes les commandes "python manage.py ...".
 from django.core.management.base import BaseCommand
 
+# La fonction qui fait le vrai travail de validation.
 from apps.prestations.services import valider_prestations_expirees
 
 
+# La classe doit s'appeler "Command" pour que Django la trouve.
 class Command(BaseCommand):
     help = "Valide les prestations REALISEE dont le délai de validation client est dépassé (sans litige en cours)."
 
+    # handle() : on valide les prestations en retard, puis on affiche combien.
     def handle(self, *args, **options):
         nombre = valider_prestations_expirees()
         self.stdout.write(self.style.SUCCESS(f"{nombre} prestation(s) validée(s) automatiquement."))

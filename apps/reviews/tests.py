@@ -1,3 +1,5 @@
+# Tests des avis clients : création, visibilité, modération par l'admin,
+# et analyse IA (sentiment + commentaires inappropriés).
 
 import os
 import types
@@ -272,6 +274,7 @@ class AvisAPITests(APITestCase):
 class ModerationAdminAPITests(APITestCase):
     """Vérifie la file de modération admin (approuver/bloquer) et l'isolation prestataire."""
 
+    # Avant chaque test : on crée un admin, un client, un prestataire et des avis.
     def setUp(self):
         self.client_user = User.objects.create_user(
             username="client_moderation_test",
@@ -339,6 +342,7 @@ class ModerationAdminAPITests(APITestCase):
         reponse_detail = self.client.get(reverse("avis-detail", kwargs={"pk": self.avis_en_attente.id}))
         self.assertEqual(reponse_detail.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Vérifie que le prestataire voit un avis publié qui le concerne.
     def test_prestataire_voit_un_avis_publie_le_concernant(self):
         self.avis_en_attente.statut = Avis.Statut.PUBLIE
         self.avis_en_attente.save(update_fields=["statut"])
@@ -349,6 +353,7 @@ class ModerationAdminAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie que l'admin peut approuver un avis en attente.
     def test_admin_peut_approuver(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("avis-approuver", kwargs={"pk": self.avis_en_attente.id})
@@ -364,6 +369,7 @@ class ModerationAdminAPITests(APITestCase):
         ).first()
         self.assertIsNotNone(notification)
 
+    # Vérifie que l'admin peut bloquer un avis.
     def test_admin_peut_bloquer(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("avis-bloquer", kwargs={"pk": self.avis_en_attente.id})
@@ -379,6 +385,7 @@ class ModerationAdminAPITests(APITestCase):
         ).first()
         self.assertIsNotNone(notification)
 
+    # Vérifie qu'un client ne peut pas approuver un avis.
     def test_client_ne_peut_pas_approuver(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("avis-approuver", kwargs={"pk": self.avis_en_attente.id})
@@ -393,6 +400,7 @@ class ModerationAdminAPITests(APITestCase):
         response = self.client.post(url)
         self.assertIn(response.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
 
+    # Vérifie que les scores bruts de l'IA ne sont jamais montrés à un client.
     def test_scores_bruts_jamais_exposes_a_un_client(self):
         self.avis_en_attente.score_sentiment = 0.42
         self.avis_en_attente.score_toxicite = 0.91
@@ -406,6 +414,7 @@ class ModerationAdminAPITests(APITestCase):
         self.assertNotIn("score_toxicite", response.data)
         self.assertNotIn("score_sentiment", response.data)
 
+    # Vérifie que l'admin voit les scores bruts de l'IA.
     def test_admin_voit_les_scores_bruts(self):
         self.avis_en_attente.score_sentiment = 0.42
         self.avis_en_attente.score_toxicite = 0.91
@@ -458,6 +467,7 @@ class AnalyseSentimentTests(TestCase):
     labels, gestion des erreurs), pas le modèle IA lui-même.
     """
 
+    # Vérifie qu'un sentiment positif est bien reconnu.
     def test_sentiment_positif_reconnu(self):
         with mock.patch("apps.reviews.services.get_sentiment_pipeline") as get_pipeline:
             get_pipeline.return_value = mock.Mock(
@@ -467,6 +477,7 @@ class AnalyseSentimentTests(TestCase):
 
         self.assertEqual(resultat, "POSITIF")
 
+    # Vérifie qu'une prédiction trop peu sûre est ignorée (None).
     def test_confiance_insuffisante_renvoie_none(self):
         with mock.patch("apps.reviews.services.get_sentiment_pipeline") as get_pipeline:
             get_pipeline.return_value = mock.Mock(
@@ -476,6 +487,7 @@ class AnalyseSentimentTests(TestCase):
 
         self.assertIsNone(resultat)
 
+    # Vérifie qu'une étiquette inconnue renvoie None.
     def test_label_inconnu_renvoie_none(self):
         with mock.patch("apps.reviews.services.get_sentiment_pipeline") as get_pipeline:
             get_pipeline.return_value = mock.Mock(
@@ -485,6 +497,7 @@ class AnalyseSentimentTests(TestCase):
 
         self.assertIsNone(resultat)
 
+    # Vérifie qu'une panne du modèle renvoie None sans faire planter.
     def test_echec_du_modele_renvoie_none_sans_lever(self):
         with mock.patch("apps.reviews.services.get_sentiment_pipeline") as get_pipeline:
             get_pipeline.side_effect = RuntimeError("modèle indisponible")
@@ -496,6 +509,7 @@ class AnalyseSentimentTests(TestCase):
 class AnalyseModerationTests(TestCase):
     """Tests unitaires d'analyser_moderation, sans appel réseau."""
 
+    # Vérifie qu'un commentaire toxique est détecté.
     def test_commentaire_toxique_detecte(self):
         with mock.patch("apps.reviews.services.get_moderation_pipeline") as get_pipeline:
             get_pipeline.return_value = mock.Mock(
@@ -505,6 +519,7 @@ class AnalyseModerationTests(TestCase):
 
         self.assertTrue(resultat)
 
+    # Vérifie qu'un commentaire normal n'est pas signalé.
     def test_commentaire_non_toxique(self):
         with mock.patch("apps.reviews.services.get_moderation_pipeline") as get_pipeline:
             get_pipeline.return_value = mock.Mock(
@@ -514,6 +529,7 @@ class AnalyseModerationTests(TestCase):
 
         self.assertFalse(resultat)
 
+    # Vérifie qu'une prédiction trop peu sûre est ignorée (None).
     def test_confiance_insuffisante_renvoie_none(self):
         with mock.patch("apps.reviews.services.get_moderation_pipeline") as get_pipeline:
             get_pipeline.return_value = mock.Mock(
@@ -527,6 +543,7 @@ class AnalyseModerationTests(TestCase):
 class AnalyserAvisTests(TestCase):
     """Tests unitaires d'analyser_avis (combinaison sentiment + modération)."""
 
+    # Vérifie qu'un commentaire vide ne lance aucune analyse.
     def test_commentaire_vide_ne_declenche_aucune_analyse(self):
         avis = types.SimpleNamespace(commentaire="   ")
 
@@ -537,6 +554,7 @@ class AnalyserAvisTests(TestCase):
             {"sentiment": None, "score_sentiment": None, "est_inapproprie": False, "score_toxicite": None},
         )
 
+    # Vérifie qu'un commentaire rempli lance les deux analyses (sentiment + modération).
     def test_commentaire_rempli_declenche_les_deux_analyses(self):
         avis = types.SimpleNamespace(commentaire="Excellent service, très professionnel.")
 
@@ -560,6 +578,7 @@ class AnalyserAvisTests(TestCase):
         )
 
 
+# Tests d'intégration avec les VRAIS modèles d'IA (lancés seulement si demandé, voir ci-dessous).
 @skipUnless(
     os.getenv("RUN_IA_INTEGRATION_TESTS") == "1",
     "Test d'intégration : télécharge de vrais modèles Hugging Face "
@@ -572,6 +591,7 @@ class AnalyserAvisTests(TestCase):
 )
 class TestIA(TestCase):
 
+    # Charge le vrai modèle de sentiment et vérifie qu'il répond.
     def test_sentiment(self):
         print("\n--- TEST SENTIMENT ---")
 
@@ -590,6 +610,7 @@ class TestIA(TestCase):
         self.assertIsNotNone(resultat)
         self.assertTrue(len(resultat) > 0)
 
+    # Charge le vrai modèle de modération et vérifie qu'il répond.
     def test_moderation(self):
         print("\n--- TEST MODERATION ---")
 

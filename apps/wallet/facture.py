@@ -12,12 +12,16 @@ l'identifiant du paiement, le total est le montant payé. Le détail du devis
 n'est affiché que s'il correspond exactement à ce montant.
 """
 
+# Le modèle des devis (réponses des prestataires).
 from apps.devis.models import ReponseDevis
+# Le modèle des demandes de prestation.
 from apps.prestations.models import DemandePrestation
 
+# Les modèles du paiement et des mouvements d'argent.
 from .models import Payment, Transaction
 
 
+# Erreur levée quand on ne peut pas encore produire de facture.
 class FactureIndisponible(Exception):
     pass
 
@@ -33,10 +37,12 @@ _STATUT_PRESTATION = {
 }
 
 
+# Renvoie le nom complet d'un utilisateur (ou son pseudo si le nom est vide).
 def _nom(user) -> str:
     return f"{user.first_name} {user.last_name}".strip() or user.username
 
 
+# Convertit un montant en texte (ou None si pas de montant).
 def _montant(valeur) -> str:
     return str(valeur) if valeur is not None else None
 
@@ -52,6 +58,7 @@ def _devis_du_paiement(paiement: Payment):
         .prefetch_related("lignes_materiaux")
         .first()
     )
+    # Pas de devis, devis non détaillé, ou montant différent du paiement : on n'affiche pas de détail.
     if reponse is None or not reponse.est_detaille or reponse.prix_propose != paiement.montant:
         return None
     return reponse
@@ -59,13 +66,16 @@ def _devis_du_paiement(paiement: Payment):
 
 # Cette fonction construit la facture d'un paiement confirmé.
 def construire_facture(paiement: Payment) -> dict:
+    # Pas de facture tant que le paiement n'est pas réussi.
     if paiement.statut != Payment.Statut.REUSSI:
         raise FactureIndisponible("La facture n'est disponible qu'après la confirmation du paiement.")
 
+    # On récupère la demande, le prestataire et le client liés au paiement.
     demande = paiement.demande_prestation
     prestataire_user = demande.prestataire.user
     client = paiement.client
 
+    # La date du paiement = la date du premier blocage des fonds.
     blocage = (
         Transaction.objects.filter(reference=paiement.id, type=Transaction.Type.BLOCAGE)
         .order_by("date_creation")
@@ -73,12 +83,15 @@ def construire_facture(paiement: Payment) -> dict:
     )
     date_paiement = blocage.date_creation if blocage else paiement.date_modification
 
+    # Import ici pour éviter un import circulaire entre les apps.
     from apps.prestations.services import litige_en_cours
 
+    # Le libellé du statut : "Litige en cours" s'il y a un litige, sinon le libellé normal.
     statut_prestation = "Litige en cours" if litige_en_cours(demande) else _STATUT_PRESTATION.get(
         demande.statut, demande.get_statut_display()
     )
 
+    # On ajoute le détail du devis seulement s'il correspond exactement au paiement.
     devis = _devis_du_paiement(paiement)
     detail = None
     if devis is not None:
@@ -101,6 +114,7 @@ def construire_facture(paiement: Payment) -> dict:
             "conditions": devis.conditions,
         }
 
+    # On renvoie la facture sous forme de dictionnaire (transformé en JSON par la vue).
     return {
         "reference": str(paiement.id),
         "date_paiement": date_paiement,

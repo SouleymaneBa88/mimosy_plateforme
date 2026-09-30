@@ -15,6 +15,7 @@ from apps.services.models import Categorie, Service
 class AdminPanelTestCase(APITestCase):
     """Base commune : un client, un prestataire vérifié et un admin."""
 
+    # Avant chaque test : on crée un admin, un client, un prestataire et quelques données.
     def setUp(self):
         self.client_user = User.objects.create_user(
             username="admpanel_client",
@@ -64,21 +65,26 @@ class AdminPanelTestCase(APITestCase):
         )
 
 
+# Tests du tableau de bord admin (statistiques et activité récente).
 class DashboardStatsAPITests(AdminPanelTestCase):
+    # Vérifie qu'un client ne peut pas accéder au tableau de bord admin.
     def test_client_ne_peut_pas_acceder_au_dashboard(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.get(reverse("admin-dashboard"))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie qu'un prestataire ne peut pas y accéder non plus.
     def test_prestataire_ne_peut_pas_acceder_au_dashboard(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("admin-dashboard"))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie qu'un visiteur non connecté ne peut pas y accéder.
     def test_anonyme_ne_peut_pas_acceder_au_dashboard(self):
         response = self.client.get(reverse("admin-dashboard"))
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    # Vérifie que l'admin reçoit des statistiques qui correspondent aux vraies données.
     def test_admin_recoit_des_statistiques_reelles(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-dashboard"))
@@ -90,6 +96,7 @@ class DashboardStatsAPITests(AdminPanelTestCase):
         self.assertEqual(response.data["demandes"]["total"], 1)
         self.assertEqual(response.data["demandes"]["en_attente"], 1)
 
+    # Vérifie que l'admin reçoit l'activité récente.
     def test_admin_recoit_activite_recente(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-activite"))
@@ -98,12 +105,15 @@ class DashboardStatsAPITests(AdminPanelTestCase):
         self.assertGreater(len(response.data["resultats"]), 0)
 
 
+# Tests de la gestion des utilisateurs par l'admin.
 class UserAdminAPITests(AdminPanelTestCase):
+    # Vérifie qu'un client ne peut pas lister les utilisateurs.
     def test_client_ne_peut_pas_lister_les_utilisateurs(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.get(reverse("admin-utilisateur-list"))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que l'admin peut lister les utilisateurs et les filtrer par rôle.
     def test_admin_peut_lister_et_filtrer_par_role(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-utilisateur-list"), {"role": "CLIENT"})
@@ -111,6 +121,7 @@ class UserAdminAPITests(AdminPanelTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
+    # Vérifie que l'admin peut désactiver un compte.
     def test_admin_peut_desactiver_un_compte(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("admin-utilisateur-changer-statut", kwargs={"pk": self.client_user.id})
@@ -120,6 +131,7 @@ class UserAdminAPITests(AdminPanelTestCase):
         self.client_user.refresh_from_db()
         self.assertFalse(self.client_user.is_active)
 
+    # Vérifie que l'admin ne peut pas désactiver son propre compte.
     def test_admin_ne_peut_pas_se_desactiver_lui_meme(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("admin-utilisateur-changer-statut", kwargs={"pk": self.admin_user.id})
@@ -141,7 +153,9 @@ class UserAdminAPITests(AdminPanelTestCase):
         self.assertEqual(self.client_user.role, User.Role.CLIENT)
 
 
+# Tests des listes admin des clients et des prestataires.
 class ClientPrestataireAdminAPITests(AdminPanelTestCase):
+    # Vérifie que la liste des clients donne leur nombre de demandes.
     def test_admin_peut_lister_les_clients_avec_leur_nombre_de_demandes(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-client-list"))
@@ -150,6 +164,7 @@ class ClientPrestataireAdminAPITests(AdminPanelTestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["nombre_demandes"], 1)
 
+    # Vérifie que l'admin peut filtrer les prestataires par statut de vérification.
     def test_admin_peut_lister_les_prestataires_et_filtrer_par_statut(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(
@@ -159,13 +174,16 @@ class ClientPrestataireAdminAPITests(AdminPanelTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
+    # Vérifie qu'un prestataire ne peut pas utiliser cette liste admin.
     def test_prestataire_ne_peut_pas_lister_les_prestataires_admin(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("admin-prestataire-list"))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
+# Tests de la liste admin des demandes de prestation.
 class DemandeAdminAPITests(AdminPanelTestCase):
+    # Vérifie le filtre par statut.
     def test_admin_peut_lister_les_demandes_et_filtrer_par_statut(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-demande-list"), {"statut": "EN_ATTENTE"})
@@ -173,6 +191,7 @@ class DemandeAdminAPITests(AdminPanelTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
+    # Vérifie la recherche texte.
     def test_admin_peut_rechercher_une_demande(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-demande-list"), {"recherche": "Awa"})
@@ -181,7 +200,9 @@ class DemandeAdminAPITests(AdminPanelTestCase):
         self.assertEqual(response.data["count"], 1)
 
 
+# Tests du score de confiance via l'API admin.
 class ScoreConfianceAdminAPITests(AdminPanelTestCase):
+    # Vérifie que l'admin peut consulter le score de confiance d'un prestataire.
     def test_admin_peut_consulter_le_score_de_confiance(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("admin-prestataire-score-confiance", kwargs={"pk": self.profil.id})
@@ -193,6 +214,7 @@ class ScoreConfianceAdminAPITests(AdminPanelTestCase):
         self.assertGreaterEqual(response.data["score"], 0)
         self.assertLessEqual(response.data["score"], 100)
 
+    # Vérifie qu'un prestataire ne peut pas consulter ce score via l'API admin.
     def test_prestataire_ne_peut_pas_consulter_le_score_via_l_api_admin(self):
         self.client.force_authenticate(user=self.prestataire_user)
         url = reverse("admin-prestataire-score-confiance", kwargs={"pk": self.profil.id})
@@ -201,7 +223,9 @@ class ScoreConfianceAdminAPITests(AdminPanelTestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
+# Tests des statistiques de litiges dans le tableau de bord.
 class DashboardLitigesStatsAPITests(AdminPanelTestCase):
+    # Vérifie que le tableau de bord contient les chiffres des litiges.
     def test_dashboard_inclut_les_statistiques_de_litiges(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("admin-dashboard"))

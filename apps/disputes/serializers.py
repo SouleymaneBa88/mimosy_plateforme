@@ -36,7 +36,9 @@ class PreuveLitigeSerializer(serializers.ModelSerializer):
 
 
 # Ce serializer valide le dépôt d'une nouvelle preuve.
+# Seuls ces trois champs sont acceptés à l'envoi d'une preuve.
 class AjouterPreuveSerializer(serializers.ModelSerializer):
+    # Configuration : le modèle et les champs acceptés.
     class Meta:
         model = PreuveLitige
         fields = ["type_preuve", "fichier", "description"]
@@ -124,6 +126,7 @@ class LitigeSerializer(serializers.ModelSerializer):
 
     # Cette méthode renvoie le statut du dernier paiement réussi lié à la prestation contestée.
     def get_paiement_statut(self, obj):
+        # On prend le paiement le plus récent de la prestation.
         paiement = (
             Payment.objects.filter(demande_prestation_id=obj.demande_prestation_id)
             .order_by("-date_creation")
@@ -153,6 +156,7 @@ class LitigeCreateSerializer(serializers.ModelSerializer):
     LitigeViewSet.perform_create).
     """
 
+    # Configuration : champs acceptés à la création d'un litige.
     class Meta:
         model = Litige
         fields = ["demande_prestation", "motif", "description_client", "description_prestataire"]

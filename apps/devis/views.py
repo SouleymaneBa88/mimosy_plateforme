@@ -480,16 +480,19 @@ class ReponseDevisViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # On verrouille la demande et la réponse pendant le refus.
         with transaction.atomic():
             demande = DemandeDevis.objects.select_for_update().get(pk=reponse.demande_id)
             reponse = ReponseDevis.objects.select_for_update().get(pk=reponse.pk)
 
+            # Déjà traité : on refuse.
             if demande.statut != DemandeDevis.Statut.EN_ATTENTE or reponse.statut != ReponseDevis.Statut.EN_ATTENTE:
                 return Response(
                     {"detail": "Ce devis a déjà été traité."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # On marque cette réponse comme refusée.
             reponse.statut = ReponseDevis.Statut.REFUSEE
             reponse.save(update_fields=["statut"])
 

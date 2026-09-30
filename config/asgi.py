@@ -39,6 +39,9 @@ from django.conf import settings  # noqa: E402
 from apps.realtime.middleware import TicketAuthMiddleware  # noqa: E402
 from apps.realtime.routing import websocket_urlpatterns  # noqa: E402
 
+# "application" est l'objet que le serveur (Daphne) appelle.
+# Il choisit la bonne "porte" selon le type de connexion :
+# HTTP classique ou WebSocket (temps réel).
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,

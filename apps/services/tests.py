@@ -1,9 +1,17 @@
+# Tests du catalogue (catégories, services, offres des prestataires) et de la
+# recherche : classique, en langage naturel, avec suggestions IA, et par proximité.
 
+import json
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from django.core.cache import cache
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import User
 from apps.locations.models import Localisation
@@ -15,6 +23,7 @@ from .models import Categorie, Competence, PrestataireService, Service
 class ServicesApiTests(APITestCase):
     """Vérifie le catalogue public et les règles d'accès aux offres."""
 
+    # setUpTestData : crée les données une seule fois pour toute la classe.
     @classmethod
     def setUpTestData(cls):
         cls.categorie = Categorie.objects.create(
@@ -107,12 +116,14 @@ class ServicesApiTests(APITestCase):
             longitude=Decimal("-17.4470"),
         )
 
+    # Petite fonction : renvoie l'adresse de l'API pour une offre.
     def offer_url(self, offer):
         return reverse(
             "prestataire-service-detail",
             args=[offer.pk],
         )
 
+    # Vérifie qu'un admin peut créer une catégorie.
     def test_admin_can_create_category(self):
         self.client.force_authenticate(self.admin)
 
@@ -137,6 +148,7 @@ class ServicesApiTests(APITestCase):
             ).exists()
         )
 
+    # Vérifie qu'un client ne peut pas créer de catégorie.
     def test_client_cannot_create_category(self):
         self.client.force_authenticate(self.client_user)
 
@@ -154,6 +166,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_403_FORBIDDEN,
         )
 
+    # Vérifie qu'un prestataire peut consulter les services.
     def test_provider_can_consult_services(self):
         self.client.force_authenticate(self.provider_a)
 
@@ -171,6 +184,7 @@ class ServicesApiTests(APITestCase):
             str(self.service.id),
         )
 
+    # Vérifie le parcours public : catégorie -> service -> offres.
     def test_public_catalog_path_returns_category_service_and_offers(self):
         offer = PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -220,6 +234,7 @@ class ServicesApiTests(APITestCase):
             str(offer.pk),
         )
 
+    # Vérifie qu'un prestataire peut créer sa propre offre.
     def test_provider_can_create_own_offer(self):
         self.client.force_authenticate(self.provider_a)
 
@@ -251,6 +266,7 @@ class ServicesApiTests(APITestCase):
             self.profile_a,
         )
 
+    # Vérifie qu'un prestataire peut modifier sa propre offre.
     def test_provider_can_update_own_offer(self):
         offer = PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -281,6 +297,7 @@ class ServicesApiTests(APITestCase):
             Decimal("17500.00"),
         )
 
+    # Vérifie qu'un prestataire ne peut pas modifier l'offre d'un autre.
     def test_provider_cannot_update_another_provider_offer(self):
         offer = PrestataireService.objects.create(
             prestataire=self.profile_b,
@@ -304,6 +321,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_404_NOT_FOUND,
         )
 
+    # Vérifie qu'un prestataire peut supprimer sa propre offre.
     def test_provider_can_delete_own_offer(self):
         offer = PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -329,6 +347,7 @@ class ServicesApiTests(APITestCase):
             ).exists()
         )
 
+    # Vérifie qu'un client ne peut pas modifier une offre.
     def test_client_cannot_modify_offer(self):
         offer = PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -352,6 +371,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_403_FORBIDDEN,
         )
 
+    # Vérifie qu'un prix négatif est refusé.
     def test_negative_price_is_rejected(self):
         self.client.force_authenticate(self.provider_a)
 
@@ -375,6 +395,7 @@ class ServicesApiTests(APITestCase):
             response.data,
         )
 
+    # Vérifie qu'un prestataire ne peut pas proposer deux fois le même service.
     def test_duplicate_provider_service_offer_is_rejected(self):
         PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -400,6 +421,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_400_BAD_REQUEST,
         )
 
+    # Vérifie qu'un visiteur non connecté ne peut rien créer.
     def test_anonymous_user_cannot_create_protected_resources(self):
         category_response = self.client.post(
             reverse("categorie-list"),
@@ -430,6 +452,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_401_UNAUTHORIZED,
         )
 
+    # Vérifie qu'un visiteur non connecté peut voir le détail d'une offre.
     def test_anonymous_user_can_view_offer_detail(self):
         offer = PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -447,6 +470,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_200_OK,
         )
 
+    # Vérifie que deux prestataires peuvent proposer le même service.
     def test_two_providers_can_offer_same_service(self):
         offer_a = PrestataireService.objects.create(
             prestataire=self.profile_a,
@@ -474,6 +498,7 @@ class ServicesApiTests(APITestCase):
             2,
         )
 
+    # Vérifie qu'un utilisateur sans profil prestataire ne peut pas créer d'offre.
     def test_provider_without_profile_cannot_create_offer(self):
         provider = User.objects.create_user(
             username="provider-without-profile",
@@ -502,6 +527,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_400_BAD_REQUEST,
         )
 
+    # Vérifie qu'on ne peut pas proposer un service d'une catégorie désactivée.
     def test_service_from_inactive_category_cannot_be_offered(self):
         inactive_category = Categorie.objects.create(
             nom="Catégorie inactive",
@@ -530,6 +556,7 @@ class ServicesApiTests(APITestCase):
             status.HTTP_400_BAD_REQUEST,
         )
 
+    # Vérifie qu'un prix de 0 est refusé.
     def test_zero_price_is_rejected(self):
         self.client.force_authenticate(self.provider_a)
 
@@ -557,6 +584,7 @@ class ServicesApiTests(APITestCase):
 class RechercheAPITests(APITestCase):
     """Vérifie l'endpoint public de recherche combinée d'offres."""
 
+    # setUpTestData : crée les données de recherche une seule fois pour toute la classe.
     @classmethod
     def setUpTestData(cls):
         cls.categorie_plomberie = Categorie.objects.create(
@@ -796,6 +824,7 @@ class RechercheIntelligenteAPITests(RechercheAPITests):
     structurée équivalente, puisqu'elle délègue entièrement à elle.
     """
 
+    # Vérifie qu'une phrase en langage naturel donne la bonne catégorie et le bon lieu.
     def test_requete_naturelle_identifie_categorie_et_localisation(self):
         response = self.client.post(
             reverse("recherche-intelligente"),
@@ -808,6 +837,7 @@ class RechercheIntelligenteAPITests(RechercheAPITests):
         self.assertEqual(response.data["interpretation"]["quartier"], "Parcelles Assainies")
         self.assertGreaterEqual(response.data["pagination"]["count"], 1)
 
+    # Vérifie que le service le plus précis est préféré.
     def test_requete_prefere_le_service_le_plus_precis(self):
         response = self.client.post(
             reverse("recherche-intelligente"),
@@ -817,12 +847,18 @@ class RechercheIntelligenteAPITests(RechercheAPITests):
 
         self.assertEqual(response.data["interpretation"]["service"], "Réparation fuite d'eau")
 
+    # Vérifie qu'une requête vide est refusée proprement.
     def test_requete_vide_refusee_proprement(self):
         response = self.client.post(reverse("recherche-intelligente"), {"query": ""}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_requete_sans_information_identifiable_retombe_sur_recherche_large(self):
-        """Le fallback ne doit jamais renvoyer d'erreur : une recherche vide reste une réponse utile."""
+    def test_requete_sans_information_identifiable_ne_renvoie_pas_tout_le_catalogue(self):
+        """
+        Régression : une requête incomprise lançait une recherche sans
+        filtre et renvoyait tout le catalogue comme s'il correspondait.
+        Elle doit renvoyer zéro résultat (sans erreur) pour laisser place
+        aux suggestions.
+        """
 
         response = self.client.post(
             reverse("recherche-intelligente"),
@@ -833,8 +869,10 @@ class RechercheIntelligenteAPITests(RechercheAPITests):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNone(response.data["interpretation"]["categorie"])
         self.assertIsNone(response.data["interpretation"]["intention"])
-        self.assertIn("results", response.data)
+        self.assertEqual(response.data["results"], [])
+        self.assertFalse(response.data["correspondance_exacte"])
 
+    # Vérifie les mêmes résultats qu'avec la recherche classique équivalente.
     def test_meme_resultats_que_la_recherche_structuree_equivalente(self):
         reponse_intelligente = self.client.post(
             reverse("recherche-intelligente"),
@@ -847,6 +885,7 @@ class RechercheIntelligenteAPITests(RechercheAPITests):
         ids_structuree = {item["id"] for item in reponse_structuree.data["results"]}
         self.assertEqual(ids_intelligente, ids_structuree)
 
+    # Vérifie la détection de l'urgence et du budget.
     def test_extraction_urgence_et_budget(self):
         from apps.services.nlp import interpreter_requete
 
@@ -894,6 +933,321 @@ class RechercheIntelligenteAPITests(RechercheAPITests):
         )
         self.assertNotIn(self.plombier.email, str(response.data))
 
+    @patch("apps.services.views.rechercher_offres_semantiques")
+    def test_formulation_naturelle_sans_mot_catalogue_utilise_offre_reelle_semantique(self, recherche_semantique):
+        """Un résultat sémantique est toujours une offre MIMOSY réelle."""
+
+        recherche_semantique.return_value = {
+            "statut": "ok",
+            "offres_ids": [str(self.offre_fuite.id)],
+            "scores": {str(self.offre_fuite.id): 0.83},
+            "seuil": 0.58,
+        }
+
+        response = self.client.post(
+            reverse("recherche-intelligente"),
+            {"query": "mon tuyau fuit sous l'évier"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["correspondance_exacte"])
+        self.assertEqual(response.data["recherche_semantique"]["statut"], "ok")
+        self.assertEqual([resultat["id"] for resultat in response.data["results"]], [str(self.offre_fuite.id)])
+
+    @patch("apps.services.views.rechercher_offres_semantiques")
+    def test_modele_semantique_indisponible_reste_sur_le_fallback_existant(self, recherche_semantique):
+        """Une panne d'embedding ne transforme jamais une recherche en erreur 500."""
+
+        recherche_semantique.return_value = {
+            "statut": "indisponible",
+            "offres_ids": [],
+            "scores": {},
+            "seuil": 0.58,
+        }
+        response = self.client.post(
+            reverse("recherche-intelligente"),
+            {"query": "mon tuyau fuit sous l'évier"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"], [])
+        self.assertEqual(response.data["recherche_semantique"]["statut"], "indisponible")
+
+    @override_settings(
+        RECHERCHE_SEMANTIQUE_ACTIVE=True,
+        RECHERCHE_SEMANTIQUE_SEUIL=0.58,
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    @patch("apps.services.recherche_semantique._encoder")
+    def test_embeddings_separent_plomberie_et_electricite_sur_formulations_naturelles(self, encoder):
+        """Les requêtes synonymes plomberie restent distinctes de l'électricité.
+
+        L'encodeur est simulé : ce test vérifie le classement, le seuil et le
+        cache du catalogue sans télécharger le modèle Hugging Face.
+        """
+        from apps.services.recherche_semantique import rechercher_offres_semantiques
+        from apps.services.nlp import interpreter_requete
+
+        cache.clear()
+
+        def vecteurs(textes):
+            return [
+                [0.0, 1.0] if "electri" in texte.lower() or "électri" in texte.lower() or "disjoncteur" in texte.lower() else [1.0, 0.0]
+                for texte in textes
+            ]
+
+        encoder.side_effect = vecteurs
+        for requete in ("fuite d'eau", "mon robinet fuit", "j'ai une fuite sous l'évier"):
+            resultat = rechercher_offres_semantiques(requete, interpreter_requete(requete))
+            services = set(PrestataireService.objects.filter(id__in=resultat["offres_ids"]).values_list("service__categorie__nom", flat=True))
+            self.assertEqual(services, {"Plomberie"})
+
+        # La fixture d'électricité est volontairement indisponible dans les
+        # autres tests de recherche ; on l'active seulement pour ce scénario.
+        self.offre_electricite.disponible = True
+        self.offre_electricite.save(update_fields=["disponible"])
+        resultat_electrique = rechercher_offres_semantiques("mon disjoncteur saute", interpreter_requete("mon disjoncteur saute"))
+        categories = set(PrestataireService.objects.filter(id__in=resultat_electrique["offres_ids"]).values_list("service__categorie__nom", flat=True))
+        self.assertEqual(categories, {"Électricité"})
+
+
+@override_settings(
+    RECHERCHE_IA_ACTIVE=True,
+    ANTHROPIC_API_KEY="cle-de-test",
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class RechercheFallbackIATests(APITestCase):
+    """
+    Fallback IA de la recherche intelligente : appelé uniquement quand la
+    recherche classique ne trouve rien, et ne proposant que des libellés
+    réels du catalogue. Le modèle de langage n'est jamais appelé pour de
+    vrai : _appeler_modele (ou le client Anthropic) est simulé.
+    """
+
+    # setUpTestData : crée le catalogue de test une seule fois.
+    @classmethod
+    def setUpTestData(cls):
+        # Mêmes données que RechercheAPITests, sans hériter de ses tests
+        # (l'offre ajoutée ci-dessous changerait leurs comptages).
+        RechercheAPITests.setUpTestData.__func__(cls)
+        # Une offre d'électricité réellement publiée (celle du parent est indisponible).
+        cls.service_maintenance = Service.objects.create(
+            categorie=cls.categorie_electricite,
+            nom="Maintenance électrique",
+        )
+        PrestataireService.objects.create(
+            prestataire=cls.profil_electricien,
+            service=cls.service_maintenance,
+            prix=Decimal("7000.00"),
+            unite="intervention",
+            disponible=True,
+        )
+
+    # Avant chaque test : on vide le cache (pour ne pas réutiliser une réponse IA).
+    def setUp(self):
+        cache.clear()
+
+    # Petite fonction : lance une recherche intelligente.
+    def rechercher(self, query, **extra):
+        return self.client.post(reverse("recherche-intelligente"), {"query": query, **extra}, format="json")
+
+    # Cas 1
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_resultats_reels_sans_appel_ia(self, appeler_modele):
+        response = self.rechercher("Je cherche un plombier")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["correspondance_exacte"])
+        self.assertGreaterEqual(len(response.data["results"]), 1)
+        self.assertIsNone(response.data["suggestions_ia"])
+        appeler_modele.assert_not_called()
+
+    # Cas 2
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_aucun_resultat_declenche_les_suggestions_ia(self, appeler_modele):
+        appeler_modele.return_value = {
+            "besoin_compris": "Installation d'un climatiseur.",
+            "suggestions": ["Maintenance électrique", "Électricité"],
+        }
+
+        response = self.rechercher("Je veux installer une climatisation")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["correspondance_exacte"])
+        self.assertEqual(response.data["results"], [])
+        suggestions_ia = response.data["suggestions_ia"]
+        self.assertEqual(suggestions_ia["statut"], "ok")
+        self.assertEqual(suggestions_ia["besoin_compris"], "Installation d'un climatiseur.")
+        self.assertEqual(
+            [(s["type"], s["libelle"]) for s in suggestions_ia["suggestions"]],
+            [("service", "Maintenance électrique"), ("categorie", "Électricité")],
+        )
+        appeler_modele.assert_called_once()
+
+    def test_verbe_generique_ne_correspond_pas_a_un_service_sans_rapport(self):
+        """Régression : "installer" ne doit plus correspondre à "Installation robinet/électrique"."""
+
+        from apps.services.nlp import interpreter_requete, mots_non_reconnus
+
+        interpretation = interpreter_requete("Je veux installer une climatisation")
+        self.assertIsNone(interpretation["service"])
+        self.assertIsNone(interpretation["categorie"])
+        self.assertEqual(mots_non_reconnus("Je veux installer une climatisation", interpretation), ["installer", "climatisation"])
+        # Le mot distinctif reste reconnu : "robinet" -> "Installation robinet".
+        self.assertEqual(interpreter_requete("installer un robinet")["service"], "Installation robinet")
+
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_mot_non_reconnu_passe_par_la_recherche_textuelle_classique(self, appeler_modele):
+        """Un mot présent seulement dans la description d'un prestataire trouve un résultat réel."""
+
+        self.profil_plombier.description = "Plombier spécialisé en chauffe-eau solaire."
+        self.profil_plombier.save()
+
+        response = self.rechercher("chauffe-eau solaire")
+
+        self.assertTrue(response.data["correspondance_exacte"])
+        self.assertGreaterEqual(len(response.data["results"]), 1)
+        appeler_modele.assert_not_called()
+
+    # Cas 3
+    @patch("apps.services.suggestions_ia._appeler_modele", side_effect=TimeoutError("délai dépassé"))
+    def test_ia_indisponible_la_recherche_reste_fonctionnelle(self, appeler_modele):
+        with self.assertLogs("apps.services.suggestions_ia", level="WARNING") as journaux:
+            response = self.rechercher("Je veux installer une climatisation")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"], [])
+        self.assertEqual(response.data["suggestions_ia"]["statut"], "indisponible")
+        self.assertEqual(response.data["suggestions_ia"]["suggestions"], [])
+        self.assertIn("Essayez avec d'autres mots-clés", response.data["suggestions_ia"]["message"])
+        # Le journal ne contient ni la clé API ni le texte du client.
+        self.assertNotIn("cle-de-test", "\n".join(journaux.output))
+        self.assertNotIn("climatisation", "\n".join(journaux.output))
+
+    # Vérifie que l'IA n'est jamais appelée quand elle est désactivée.
+    @override_settings(RECHERCHE_IA_ACTIVE=False)
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_ia_desactivee_aucun_appel(self, appeler_modele):
+        response = self.rechercher("Je veux installer une climatisation")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["suggestions_ia"]["statut"], "indisponible")
+        appeler_modele.assert_not_called()
+
+    # Cas 4
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_suggestion_inventee_ou_prestataire_jamais_renvoye(self, appeler_modele):
+        appeler_modele.return_value = {
+            "besoin_compris": "Climatisation.",
+            "suggestions": ["Climatisation Pro Dakar", "Moussa Ndiaye", "Maintenance électrique"],
+        }
+
+        response = self.rechercher("Je veux installer une climatisation")
+
+        self.assertEqual(response.data["results"], [])
+        suggestions = response.data["suggestions_ia"]["suggestions"]
+        # Seul le libellé réel du catalogue survit.
+        self.assertEqual([s["libelle"] for s in suggestions], ["Maintenance électrique"])
+        suggestion = suggestions[0]
+        self.assertEqual(suggestion["nature"], "suggestion_recherche")
+        # Aucun champ propre à un prestataire ou à une offre.
+        for champ in ("id", "prestataire_id", "prestataire_nom", "prix", "note", "latitude", "longitude", "disponible"):
+            self.assertNotIn(champ, suggestion)
+        # Le nombre d'offres vient de la base, pas de l'IA.
+        self.assertEqual(suggestion["nb_offres"], 1)
+
+    # Vérifie que la même requête est mise en cache (un seul appel à l'IA).
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_meme_requete_mise_en_cache(self, appeler_modele):
+        appeler_modele.return_value = {"besoin_compris": "Climatisation.", "suggestions": ["Électricité"]}
+
+        self.rechercher("Je veux installer une climatisation")
+        self.rechercher("je veux installer une climatisation ")
+
+        appeler_modele.assert_called_once()
+
+    # Cas 5
+    @patch("anthropic.Anthropic")
+    def test_aucune_donnee_sensible_envoyee_a_l_ia(self, classe_client):
+        reponse_modele = SimpleNamespace(
+            stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text=json.dumps({"besoin_compris": "x", "suggestions": []}))],
+        )
+        classe_client.return_value.beta.messages.create.return_value = reponse_modele
+
+        client_user = User.objects.create_user(
+            username="client-fallback",
+            email="client-fallback@example.com",
+            password="MotDePasseSecret123!",
+            phone="771234567",
+            role=User.Role.CLIENT,
+        )
+        jeton = str(RefreshToken.for_user(client_user).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {jeton}")
+
+        response = self.rechercher(
+            "climatisation, contactez-moi : client-fallback@example.com ou 77 123 45 67",
+            latitude="14.7",
+            longitude="-17.4",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        appel = classe_client.return_value.beta.messages.create.call_args
+        envoye = json.dumps(appel.kwargs, ensure_ascii=False, default=str)
+        for secret in (
+            "client-fallback@example.com", "771234567", "77 123 45 67", "MotDePasseSecret123!",
+            jeton, "14.7", "-17.4", "Moussa", self.plombier.email, self.plombier.phone,
+        ):
+            self.assertNotIn(secret, envoye)
+        self.assertIn("climatisation", envoye)
+        # La clé API vient des réglages (variable d'environnement), jamais du code.
+        self.assertEqual(classe_client.call_args.kwargs["api_key"], "cle-de-test")
+        # Le modèle ne peut choisir que dans le catalogue publié.
+        schema = appel.kwargs["output_config"]["format"]["schema"]
+        self.assertEqual(
+            set(schema["properties"]["suggestions"]["items"]["enum"]),
+            {"Installation robinet", "Réparation fuite d'eau", "Maintenance électrique", "Plomberie", "Électricité"},
+        )
+
+    # Cas 6
+    @patch("apps.services.suggestions_ia._appeler_modele")
+    def test_accessible_anonyme_et_client_connecte(self, appeler_modele):
+        appeler_modele.return_value = {"besoin_compris": "x", "suggestions": ["Électricité"]}
+
+        anonyme = self.rechercher("Je veux installer une climatisation")
+        self.assertEqual(anonyme.status_code, status.HTTP_200_OK)
+
+        client_user = User.objects.create_user(
+            username="client-permissions",
+            email="client-permissions@example.com",
+            password="Password123!",
+            phone="770000199",
+            role=User.Role.CLIENT,
+        )
+        self.client.force_authenticate(client_user)
+        connecte = self.rechercher("Je veux installer une climatisation")
+        self.assertEqual(connecte.status_code, status.HTTP_200_OK)
+        self.assertEqual(connecte.data["suggestions_ia"], anonyme.data["suggestions_ia"])
+
+    # Vérifie qu'un jeton invalide est refusé, comme ailleurs dans l'API.
+    def test_jeton_invalide_refuse_comme_le_reste_de_l_api(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer jeton-invalide")
+
+        response = self.rechercher("Je veux installer une climatisation")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    # Vérifie que les emails et numéros de téléphone sont masqués avant l'envoi à l'IA.
+    def test_masquage_des_donnees_personnelles(self):
+        from apps.services.suggestions_ia import masquer_donnees_personnelles
+
+        texte = masquer_donnees_personnelles("Appelez le +221 77 123 45 67 ou a.b@mail.sn pour la clim")
+        self.assertNotIn("77 123", texte)
+        self.assertNotIn("a.b@mail.sn", texte)
+        self.assertIn("clim", texte)
+
 
 class RechercheProximiteAPITests(APITestCase):
     """Vérifie la recherche par proximité (latitude, longitude, rayon_km) de C12.2."""
@@ -905,6 +1259,7 @@ class RechercheProximiteAPITests(APITestCase):
     CLIENT_LATITUDE = Decimal("14.751")
     CLIENT_LONGITUDE = Decimal("-17.421")
 
+    # setUpTestData : crée des prestataires à différentes distances, une seule fois.
     @classmethod
     def setUpTestData(cls):
         cls.categorie = Categorie.objects.create(
@@ -1007,11 +1362,13 @@ class RechercheProximiteAPITests(APITestCase):
             disponible=True,
         )
 
+    # Petite fonction : lance une recherche classique avec des paramètres.
     def rechercher(self, **params):
         return self.client.get(reverse("recherche"), params)
 
     # ---- Validation ----------------------------------------------
 
+    # Vérifie que des coordonnées valides sont acceptées.
     def test_latitude_et_longitude_valides_sont_acceptees(self):
         response = self.rechercher(
             latitude=str(self.CLIENT_LATITUDE),
@@ -1020,6 +1377,7 @@ class RechercheProximiteAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
+    # Vérifie les refus de latitude / longitude hors limites.
     def test_latitude_trop_basse_refusee(self):
         response = self.rechercher(latitude="-91", longitude=str(self.CLIENT_LONGITUDE))
 
@@ -1040,6 +1398,7 @@ class RechercheProximiteAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'une latitude sans longitude est refusée (et inversement).
     def test_latitude_sans_longitude_refusee(self):
         response = self.rechercher(latitude=str(self.CLIENT_LATITUDE))
 
@@ -1050,6 +1409,7 @@ class RechercheProximiteAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie les refus de rayon invalide (négatif, zéro, trop grand, sans coordonnées).
     def test_rayon_negatif_refuse(self):
         response = self.rechercher(
             latitude=str(self.CLIENT_LATITUDE),
@@ -1112,6 +1472,7 @@ class RechercheProximiteAPITests(APITestCase):
 
     # ---- Rayon --------------------------------------------------------
 
+    # Vérifie qu'un prestataire hors du rayon est exclu.
     def test_prestataire_hors_rayon_exclu(self):
         response = self.rechercher(
             latitude=str(self.CLIENT_LATITUDE),
@@ -1123,6 +1484,7 @@ class RechercheProximiteAPITests(APITestCase):
         self.assertIn(str(self.offre_proche.id), ids)
         self.assertNotIn(str(self.offre_loin.id), ids)
 
+    # Vérifie qu'un prestataire dans un grand rayon est inclus.
     def test_prestataire_dans_un_grand_rayon_inclus(self):
         response = self.rechercher(
             latitude=str(self.CLIENT_LATITUDE),
@@ -1166,6 +1528,7 @@ class RechercheProximiteAPITests(APITestCase):
         ids = {resultat["id"] for resultat in response.data["results"]}
         self.assertNotIn(str(self.offre_sans_loc.id), ids)
 
+    # Vérifie qu'un prestataire sans localisation est exclu de la recherche géographique.
     def test_recherche_geographique_exclut_prestataire_sans_localisation(self):
         response = self.rechercher(
             latitude=str(self.CLIENT_LATITUDE),
@@ -1177,6 +1540,7 @@ class RechercheProximiteAPITests(APITestCase):
 
     # ---- Combinaison avec les filtres C12.1 ----------------------------
 
+    # Vérifie les combinaisons : proximité + texte / catégorie / ville / disponibilité.
     def test_combinaison_texte_et_proximite(self):
         response = self.rechercher(
             q="fuite",
@@ -1228,6 +1592,7 @@ class RechercheProximiteAPITests(APITestCase):
 
     # ---- Pagination -----------------------------------------------------
 
+    # Vérifie que la pagination fonctionne après le filtre géographique.
     def test_pagination_apres_filtre_geographique(self):
         response = self.rechercher(
             latitude=str(self.CLIENT_LATITUDE),

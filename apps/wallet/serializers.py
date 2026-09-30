@@ -124,13 +124,19 @@ class InitierPaiementSerializer(serializers.Serializer):
 
 # Ce serializer expose une demande de retrait.
 class WithdrawalSerializer(serializers.ModelSerializer):
+    # True pour un retrait de démonstration : aucun déboursement PayDunya réel.
+    est_simulation = serializers.SerializerMethodField()
+
     # Cette classe interne configure quel modèle et quels champs utiliser.
     class Meta:
         model = Withdrawal
         # La liste des champs exposés dans l'API.
-        fields = ["id", "montant", "provider", "destination", "statut", "reference_externe", "date_creation"]
+        fields = ["id", "montant", "provider", "destination", "statut", "est_simulation", "reference_externe", "date_creation"]
         # Tous ces champs sont en lecture seule.
         read_only_fields = fields
+
+    def get_est_simulation(self, retrait) -> bool:
+        return retrait.statut == Withdrawal.Statut.SIMULE
 
 
 # Moyens de retrait que le prestataire peut effectivement choisir. SANDBOX

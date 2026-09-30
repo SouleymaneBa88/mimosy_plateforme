@@ -1,6 +1,5 @@
 # On importe uuid pour créer des identifiants uniques.
 import uuid
-
 # On importe les réglages du projet Django (settings.py).
 from django.conf import settings
 # On importe des validateurs Django pour vérifier des bornes min/max.

@@ -6,5 +6,6 @@ from .views import DiagnosticView
 
 # La liste des URLs de cette app.
 urlpatterns = [
+    # POST /api/diagnostic/ : analyse une description de problème.
     path("diagnostic/", DiagnosticView.as_view(), name="diagnostic"),
 ]

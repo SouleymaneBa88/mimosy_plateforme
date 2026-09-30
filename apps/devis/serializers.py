@@ -183,6 +183,7 @@ class LigneMateriauSerializer(serializers.ModelSerializer):
     # Le montant de la ligne est toujours calculé par le backend.
     montant = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
+    # Configuration : le modèle et les champs d'une ligne de matériau.
     class Meta:
         model = LigneMateriau
         fields = ["id", "designation", "quantite", "unite", "prix_unitaire", "montant"]

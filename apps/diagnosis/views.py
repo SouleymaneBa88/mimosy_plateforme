@@ -23,15 +23,20 @@ class DiagnosticView(APIView):
     la recherche elle-même, qui reste faite via /api/recherche/.
     """
 
+    # Tout le monde peut utiliser le diagnostic, même sans être connecté.
     permission_classes = [AllowAny]
 
+    # POST : le client envoie la description de son problème.
     def post(self, request, *args, **kwargs):
+        # On récupère le texte envoyé et on enlève les espaces au début et à la fin.
         texte = str(request.data.get("description", "")).strip()
 
+        # Texte vide : on renvoie une erreur 400.
         if not texte:
             return Response(
                 {"description": {"detail": "Le champ 'description' est obligatoire."}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Sinon, on renvoie le diagnostic.
         return Response(diagnostiquer(texte))

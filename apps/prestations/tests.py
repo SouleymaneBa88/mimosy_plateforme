@@ -1,3 +1,5 @@
+# Tests des demandes de prestation : création, droits d'accès,
+# changements de statut (accepter, refuser, terminer, confirmer, annuler).
 from datetime import timedelta
 
 from django.urls import reverse

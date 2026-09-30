@@ -27,6 +27,7 @@ from apps.profiles.models import ProfilPrestataire
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
+# Crée un utilisateur de test.
 def _make_user(username, email, phone, role, **extra):
     return User.objects.create_user(
         username=username, email=email, password="Test123!",
@@ -36,6 +37,7 @@ def _make_user(username, email, phone, role, **extra):
     )
 
 
+# Crée une petite image JPEG en mémoire.
 def _jpeg(taille=(20, 20)):
     buf = io.BytesIO()
     Image.new("RGB", taille, "white").save(buf, "JPEG")
@@ -180,10 +182,12 @@ class PipelineOCRCNITest(TestCase):
         """
         from apps.verification.services import comparer_avec_profil
 
+        # Faux utilisateur (sans base de données) pour tester la comparaison.
         class FakeUser:
             first_name = "Ibrahima"
             last_name  = "Fall"
 
+        # Faux profil qui pointe vers le faux utilisateur.
         class FakeProfil:
             user = FakeUser()
             date_naissance = None
@@ -260,6 +264,7 @@ class PublicationServiceCNITest(APITestCase):
       CNI validée (par admin) → service visible
     """
 
+    # Avant le test : on crée un prestataire localisé, un service et une offre.
     def setUp(self):
         from apps.locations.models import Localisation
         from apps.services.models import Categorie, Service
@@ -288,6 +293,7 @@ class PublicationServiceCNITest(APITestCase):
         self.categorie = Categorie.objects.create(nom="Électricité", statut="ACTIVE")
         self.service   = Service.objects.create(categorie=self.categorie, nom="Installation")
 
+    # Vérifie : CNI non validée -> service invisible ; CNI validée -> service visible.
     def test_cni_non_validee_bloque_puis_cni_validee_autorise(self):
         from apps.services.models import PrestataireService
         from apps.verification.models import DocumentIdentite
@@ -301,6 +307,7 @@ class PublicationServiceCNITest(APITestCase):
             disponible=True,
         )
 
+        # Petite fonction : lance une recherche et renvoie les résultats.
         def rechercher():
             resp = self.client.get(reverse("recherche"), {"service": "Installation"})
             self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -352,6 +359,7 @@ class IAAvisTest(APITestCase):
       avis toxique → EN_ATTENTE, invisible prestataire
     """
 
+    # Avant le test : on crée un prestataire, un client et deux prestations terminées.
     def setUp(self):
         from apps.prestations.models import DemandePrestation
 
@@ -379,6 +387,7 @@ class IAAvisTest(APITestCase):
             statut=DemandePrestation.Statut.TERMINEE,
         )
 
+    # Petite fonction : le client poste un avis sur une prestation.
     def _poster_avis(self, prestation_id, note, commentaire):
         self.client.force_authenticate(user=self.client_user)
         return self.client.post(
@@ -478,6 +487,7 @@ def _photo_avec_carte(angle=4):
 class OCRRecadrageReelTest(TestCase):
     """Test OCR réel ciblé : la carte est repérée puis lue ; sans carte, rien n'est lu."""
 
+    # Vérifie qu'une carte est bien recadrée puis lue, et qu'une photo sans carte n'est pas exploitée.
     def test_carte_recadree_puis_lue_et_photo_sans_carte_non_exploitable(self):
         from apps.verification.services import extraire_texte
 
@@ -503,6 +513,7 @@ class OCRRecadrageReelTest(TestCase):
 class DepotNonBloquantTest(APITestCase):
     """Le dépôt répond en 202 sans attendre l'analyse, qui tourne dans un thread."""
 
+    # Vérifie que l'envoi d'un document répond tout de suite, sans attendre la fin de l'analyse.
     def test_post_repond_avant_la_fin_de_l_analyse(self):
         user = _make_user("depot", "depot@t.com", "770222333", User.Role.PRESTATAIRE)
         ProfilPrestataire.objects.create(user=user)

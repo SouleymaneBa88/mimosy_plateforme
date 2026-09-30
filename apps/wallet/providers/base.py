@@ -61,6 +61,9 @@ class ResultatProvider:
     url_paiement: Optional[str] = None
     # Liens supplémentaires éventuels (ex. {"om_url": ..., "maxit_url": ...}).
     liens_alternatifs: Optional[dict] = None
+    # True uniquement pour un retrait de démonstration (PAYDUNYA_PAYOUT_DEMO) :
+    # aucun fournisseur n'a été appelé, rien n'a été déboursé.
+    simule: bool = False
 
 
 # Cette structure regroupe ce qu'il faut savoir du payeur pour un paiement mobile.

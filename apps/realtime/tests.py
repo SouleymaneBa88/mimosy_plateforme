@@ -26,6 +26,7 @@ from config.asgi import application
 ORIGINE_FRONTEND = b"http://localhost:5173"
 
 
+# Petite fonction d'aide : crée un utilisateur de test avec un rôle.
 def _utilisateur(nom, role):
     return User.objects.create_user(
         username=nom, email=f"{nom}@example.invalid", password=None,
@@ -33,6 +34,7 @@ def _utilisateur(nom, role):
     )
 
 
+# Petite fonction d'aide : prépare une connexion WebSocket de test (avec ticket et origine).
 def _communicateur(ticket=None, origine=ORIGINE_FRONTEND):
     chemin = f"/ws/?ticket={ticket}" if ticket else "/ws/"
     entetes = [(b"origin", origine)] if origine else []
@@ -44,11 +46,14 @@ async def _evenement(groupe, nom="test"):
     await get_channel_layer().group_send(groupe, {"type": "realtime.evenement", "evenement": nom, "data": {}})
 
 
+# Tests de la délivrance des tickets par l'API REST.
 class TicketRestTests(TransactionTestCase):
+    # Vérifie qu'on ne peut pas obtenir de ticket sans être connecté (JWT).
     def test_1_ticket_sans_jwt_refuse(self):
         reponse = APIClient().post("/api/ws/ticket/")
         self.assertEqual(reponse.status_code, 401)
 
+    # Vérifie qu'un utilisateur connecté obtient bien un ticket.
     def test_2_ticket_avec_jwt_valide(self):
         client = _utilisateur("presta_ticket", User.Role.PRESTATAIRE)
         jwt = str(RefreshToken.for_user(client).access_token)
@@ -65,12 +70,15 @@ class TicketRestTests(TransactionTestCase):
         self.assertNotIn(jwt, reponse.data["ticket"])
 
 
+# Tests de la connexion WebSocket elle-même.
 class ConnexionWebSocketTests(TransactionTestCase):
+    # Avant chaque test : on crée un client et un admin.
     def setUp(self):
         self.client_a = _utilisateur("client_a", User.Role.CLIENT)
         self.presta_b = _utilisateur("presta_b", User.Role.PRESTATAIRE)
         self.admin = _utilisateur("admin_c", User.Role.ADMIN)
 
+    # Vérifie qu'un ticket expiré est refusé.
     async def test_3_ticket_expire_refuse(self):
         ticket = creer_ticket(self.client_a)
         import time
@@ -78,6 +86,7 @@ class ConnexionWebSocketTests(TransactionTestCase):
             connecte, _ = await _communicateur(ticket).connect()
         self.assertFalse(connecte)
 
+    # Vérifie qu'un ticket ne peut servir qu'une seule fois.
     async def test_4_ticket_usage_unique(self):
         ticket = creer_ticket(self.client_a)
 
@@ -93,6 +102,7 @@ class ConnexionWebSocketTests(TransactionTestCase):
         connecte, _ = await _communicateur(ticket).connect()
         self.assertFalse(connecte, "Un ticket déjà utilisé ne doit plus rien ouvrir.")
 
+    # Vérifie le refus sans ticket, ou depuis un site non autorisé.
     async def test_5_sans_ticket_ou_origine_interdite_refuse(self):
         connecte, _ = await _communicateur().connect()
         self.assertFalse(connecte, "Sans ticket : refus.")
@@ -102,6 +112,7 @@ class ConnexionWebSocketTests(TransactionTestCase):
             connecte, _ = await _communicateur(ticket, origine=origine).connect()
             self.assertFalse(connecte, f"Origine {origine!r} : refus, même avec un ticket valide.")
 
+    # Vérifie qu'un client est isolé dans son groupe et ne reçoit jamais les messages des admins.
     async def test_6_client_isole_et_jamais_admin(self):
         ws = _communicateur(creer_ticket(self.client_a))
         await ws.connect()
@@ -115,6 +126,7 @@ class ConnexionWebSocketTests(TransactionTestCase):
         self.assertEqual(await ws.receive_json_from(), {"type": "pour_a"})
         await ws.disconnect()
 
+    # Vérifie qu'un admin rejoint bien le groupe "admins".
     async def test_7_admin_rejoint_admins(self):
         ws = _communicateur(creer_ticket(self.admin))
         await ws.connect()
@@ -126,6 +138,7 @@ class ConnexionWebSocketTests(TransactionTestCase):
         self.assertEqual(await ws.receive_json_from(), {"type": "pour_admin_c"})
         await ws.disconnect()
 
+    # Vérifie que le navigateur ne peut pas choisir lui-même ses groupes.
     async def test_8_navigateur_ne_choisit_pas_ses_groupes(self):
         ws = _communicateur(creer_ticket(self.client_a))
         await ws.connect()
@@ -173,6 +186,7 @@ class EvenementsMetierTests(TransactionTestCase):
     de test, comme le ferait l'API, puis détruits à la fin du test.
     """
 
+    # Avant chaque test : on crée un client, un prestataire, un prestataire "extérieur" et un admin.
     def setUp(self):
         self.client_a = _utilisateur("client_evt", User.Role.CLIENT)
         self.presta = _utilisateur("presta_evt", User.Role.PRESTATAIRE)
@@ -192,19 +206,23 @@ class EvenementsMetierTests(TransactionTestCase):
             connexions.append(ws)
         return connexions
 
+    # Outil : lit le prochain événement reçu et vérifie qu'il ne contient que des champs autorisés.
     async def _recu(self, ws):
         evenement = await ws.receive_json_from(timeout=2)
         self.assertLessEqual(set(evenement), CHAMPS_PUBLIABLES, "Champ non autorisé dans un événement.")
         return evenement
 
+    # Outil : vérifie que ces connexions ne reçoivent rien.
     async def _rien(self, *connexions):
         for ws in connexions:
             self.assertTrue(await ws.receive_nothing(timeout=0.3), "Événement reçu par une personne non concernée.")
 
+    # Outil : ferme les connexions.
     async def _fermer(self, *connexions):
         for ws in connexions:
             await ws.disconnect()
 
+    # Outil : crée une demande de prestation de test.
     def _demande(self):
         return DemandePrestation.objects.create(
             client=self.client_a, prestataire=self.profil, description="Réparation",
@@ -224,6 +242,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(exterieur)
         await self._fermer(dest, exterieur)
 
+    # Vérifie qu'une nouvelle demande, puis son changement de statut, arrivent aux deux parties.
     async def test_demande_nouvelle_puis_statut_aux_deux_parties(self):
         client, presta, exterieur = await self._connecter(self.client_a, self.presta, self.exterieur)
         demande = await database_sync_to_async(self._demande)()
@@ -237,6 +256,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(exterieur)
         await self._fermer(client, presta, exterieur)
 
+    # Vérifie qu'un enregistrement sans changement de statut ne publie rien.
     async def test_enregistrement_sans_changement_de_statut_ne_publie_rien(self):
         demande = await database_sync_to_async(self._demande)()
         (client,) = await self._connecter(self.client_a)
@@ -245,10 +265,12 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(client)
         await self._fermer(client)
 
+    # Vérifie qu'aucun événement n'est envoyé si la transaction est annulée.
     async def test_transaction_annulee_aucun_evenement(self):
         demande = await database_sync_to_async(self._demande)()
         (client,) = await self._connecter(self.client_a)
 
+        # On change le statut puis on provoque une erreur : la transaction est annulée.
         def accepter_puis_echouer():
             with transaction.atomic():
                 demande.statut = DemandePrestation.Statut.ACCEPTEE
@@ -260,6 +282,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(client)
         await self._fermer(client)
 
+    # Vérifie qu'un litige prévient les parties et les admins, mais pas une personne extérieure.
     async def test_litige_parties_et_admins_pas_exterieur(self):
         demande = await database_sync_to_async(self._demande)()
         client, presta, admin, exterieur = await self._connecter(self.client_a, self.presta, self.admin, self.exterieur)
@@ -277,6 +300,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(exterieur)
         await self._fermer(client, presta, admin, exterieur)
 
+    # Vérifie que les étapes de vérification vont au seul prestataire, puis aux admins.
     @override_settings(VERIFICATION_IA_ACTIVE=True)
     async def test_verification_etapes_au_seul_prestataire_puis_admins(self):
         from apps.verification.services import analyser_document
@@ -298,6 +322,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(exterieur)
         await self._fermer(presta, admin, exterieur)
 
+    # Vérifie l'événement quand un admin valide une vérification.
     async def test_verification_validee_par_admin(self):
         document = await database_sync_to_async(DocumentIdentite.objects.create)(
             prestataire=self.profil, fichier=SimpleUploadedFile("p.jpg", b"\xff\xd8\xff", content_type="image/jpeg"),
@@ -316,6 +341,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(exterieur)
         await self._fermer(presta, exterieur)
 
+    # Vérifie qu'une notification n'arrive qu'à son propriétaire.
     async def test_notification_a_son_seul_proprietaire(self):
         client, exterieur = await self._connecter(self.client_a, self.exterieur)
         notification = await database_sync_to_async(Notification.objects.create)(
@@ -325,6 +351,7 @@ class EvenementsMetierTests(TransactionTestCase):
         await self._rien(exterieur)
         await self._fermer(client, exterieur)
 
+    # Vérifie que publier() refuse les champs non autorisés.
     def test_publier_refuse_les_champs_non_autorises(self):
         with self.assertRaises(ValueError):
             publier("demande.statut", {"id": 1, "description": "texte privé"}, [self.client_a.pk])

@@ -40,8 +40,10 @@ def diagnostiquer(texte: str) -> dict:
     professionnel contacté reste seul juge de la situation réelle.
     """
 
+    # On analyse le texte du client (catégorie, service, compétence, urgence).
     interpretation = interpreter_requete(texte)
 
+    # "findings" = la liste des constats trouvés dans le texte.
     findings = []
     if interpretation["categorie"]:
         findings.append(f"Domaine identifié : {interpretation['categorie']}.")
@@ -50,10 +52,13 @@ def diagnostiquer(texte: str) -> dict:
     if interpretation["competence"]:
         findings.append(f"Compétence recommandée : {interpretation['competence']}.")
 
+    # Si le client parle d'urgence, la criticité est "Élevée".
     criticite = "Élevée" if interpretation["urgence"] else "Normale"
     findings.append(f"Criticité estimée : {criticite}.")
 
+    # "warnings" = les avertissements affichés au client.
     warnings = [AVERTISSEMENT_SECURITE]
+    # A-t-on reconnu au moins un domaine, un service ou une compétence ?
     identifie = bool(interpretation["categorie"] or interpretation["service"] or interpretation["competence"])
     if not identifie:
         warnings.append(
@@ -68,6 +73,7 @@ def diagnostiquer(texte: str) -> dict:
         2,
     )
 
+    # On renvoie le diagnostic sous forme de dictionnaire.
     return {
         "status": "identifie" if identifie else "non_identifie",
         "confidence": confidence,
