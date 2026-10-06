@@ -29,6 +29,7 @@ class RendezVousTestCase(APITestCase):
     # Avant chaque test : on crée un client, un prestataire vérifié, un service et une disponibilité.
     def setUp(self):
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_client",
             email="rdv-client@test.com",
             password="TestPassword123!",
@@ -39,6 +40,7 @@ class RendezVousTestCase(APITestCase):
         )
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_prestataire",
             email="rdv-prestataire@test.com",
             password="TestPassword123!",
@@ -157,6 +159,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
     # Vérifie qu'un autre prestataire ne peut pas modifier cette disponibilité.
     def test_autre_prestataire_ne_peut_pas_modifier_la_disponibilite(self):
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_autre_prestataire",
             email="rdv-autre-prestataire@test.com",
             password="TestPassword123!",
@@ -419,6 +422,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         # Un deuxième prestataire, disponible au même moment.
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_prestataire_2",
             email="rdv-prestataire-2@test.com",
             password="TestPassword123!",
@@ -646,6 +650,7 @@ class RendezVousConcurrenceAPITests(RendezVousTestCase):
     @staticmethod
     def _autre_client():
         return User.objects.create_user(
+            email_verified=True,
             username="rdv_client_concurrent",
             email="rdv-client-concurrent@test.com",
             password="TestPassword123!",
@@ -687,6 +692,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
     # Vérifie qu'un autre client ne voit pas ce rendez-vous.
     def test_autre_client_ne_voit_pas_le_rendez_vous(self):
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="rdv_autre_client",
             email="rdv-autre-client@test.com",
             password="TestPassword123!",
@@ -704,6 +710,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
     # Vérifie qu'un autre prestataire ne voit pas ce rendez-vous.
     def test_autre_prestataire_ne_voit_pas_le_rendez_vous(self):
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_prestataire_3",
             email="rdv-prestataire-3@test.com",
             password="TestPassword123!",
@@ -809,6 +816,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
     # Vérifie qu'un autre client ne peut pas annuler ce rendez-vous.
     def test_autre_client_ne_peut_pas_annuler(self):
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="rdv_autre_client_2",
             email="rdv-autre-client-2@test.com",
             password="TestPassword123!",

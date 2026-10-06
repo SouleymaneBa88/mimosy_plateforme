@@ -33,11 +33,15 @@ from rest_framework.views import APIView
 
 # On importe le modèle User pour vérifier les rôles.
 from apps.accounts.models import User
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified
 # On importe le modèle Notification pour prévenir les utilisateurs.
 from apps.notifications.models import Notification
 
 # On importe le modèle DocumentIdentite.
 from .models import DocumentIdentite
+# On importe l'outil qui trace les événements dans l'historique du dossier.
+from .parcours import journaliser_document
 # On importe les permissions personnalisées de cette app.
 from .permissions import IsAdmin, IsPrestataire
 # On importe les serializers utilisés dans ce fichier.
@@ -47,10 +51,13 @@ from .serializers import (
     RejeterDocumentSerializer,
 )
 # On importe la fonction qui lance l'analyse du document.
-from .services import analyser_document, traiter_verification_document, verifier_magic_bytes
+from .services import analyser_document, traiter_verification_document_en_arriere_plan, verifier_magic_bytes
 
 # Les formats d'image acceptés pour un document d'identité.
 FORMATS_ACCEPTES = {"image/jpeg", "image/png"}
+# Les justificatifs professionnels (diplômes, certificats, attestations)
+# sont souvent des PDF ; la pièce d'identité reste en image pour l'OCR.
+FORMATS_ACCEPTES_JUSTIFICATIF = FORMATS_ACCEPTES | {"application/pdf"}
 # La taille maximale autorisée pour le fichier envoyé (5 Mo).
 TAILLE_MAX_OCTETS = 5 * 1024 * 1024  # 5 Mo
 
@@ -72,8 +79,9 @@ class MonDocumentIdentiteView(APIView):
         formulaire est facultatif, avec le même défaut.
     """
 
-    # Seul un prestataire connecté peut utiliser cette vue.
-    permission_classes = [IsAuthenticated, IsPrestataire]
+    # Seul un prestataire connecté peut utiliser cette vue ; la soumission
+    # (POST) exige en plus un e-mail confirmé, première étape de confiance.
+    permission_classes = [IsAuthenticated, IsPrestataire, IsEmailVerified]
     # On autorise la réception de fichiers uploadés (formulaire multipart).
     parser_classes = [MultiPartParser, FormParser]
 
@@ -118,9 +126,17 @@ class MonDocumentIdentiteView(APIView):
         if not fichier:
             raise ValidationError({"fichier": "Un fichier est requis."})
 
-        # Seuls certains formats d'image sont acceptés.
-        if fichier.content_type not in FORMATS_ACCEPTES:
-            raise ValidationError({"fichier": "Formats acceptés : JPEG ou PNG uniquement."})
+        type_document = self._type_document(request.data.get("type_document"))
+        est_identite = type_document == DocumentIdentite.TypeDocument.PIECE_IDENTITE
+
+        # Seuls certains formats sont acceptés (images pour la pièce d'identité,
+        # images ou PDF pour un justificatif professionnel).
+        if fichier.content_type not in (FORMATS_ACCEPTES if est_identite else FORMATS_ACCEPTES_JUSTIFICATIF):
+            raise ValidationError({
+                "fichier": "Formats acceptés : JPEG ou PNG uniquement."
+                if est_identite
+                else "Formats acceptés : JPEG, PNG ou PDF uniquement."
+            })
 
         # Le fichier ne doit pas dépasser la taille maximale autorisée.
         if fichier.size > TAILLE_MAX_OCTETS:
@@ -133,23 +149,25 @@ class MonDocumentIdentiteView(APIView):
             raise ValidationError({
                 "fichier": (
                     "Le contenu du fichier ne correspond pas au format déclaré "
-                    f"({fichier.content_type}). Seuls les fichiers JPEG et PNG réels "
-                    "sont acceptés."
+                    f"({fichier.content_type}). Seuls les fichiers réels du format "
+                    "indiqué sont acceptés."
                 )
             })
 
-        type_document = self._type_document(request.data.get("type_document"))
         prestataire = request.user.profil_prestataire
 
         # Remplacer un document réinitialise entièrement le résultat précédent :
         # on ne mélange jamais un ancien score avec un nouveau fichier.
         # date_analyse_debut est remis à None — il sera renseigné par le thread
         # au début de son traitement.
-        document, _ = DocumentIdentite.objects.update_or_create(
+        document, cree = DocumentIdentite.objects.update_or_create(
             prestataire=prestataire,
             type_document=type_document,
             defaults={
                 "fichier": fichier,
+                # Un remplacement est une nouvelle soumission : sa date sert au
+                # parcours (cohérence à recalculer, étape refaite après un renvoi).
+                "date_soumission": timezone.now(),
                 "statut": DocumentIdentite.Statut.EN_ANALYSE,
                 "donnees_extraites": None,
                 "resultat_comparaison": None,
@@ -161,12 +179,22 @@ class MonDocumentIdentiteView(APIView):
             },
         )
 
+        # Historique du dossier : chaque soumission reste tracée, même quand
+        # elle remplace un document précédent.
+        journaliser_document(
+            document,
+            "DOCUMENT_SOUMIS",
+            f"{document.get_type_document_display()} {'soumis' if cree else 'remplacé par une nouvelle soumission'}.",
+            request.user,
+            remplacement=not cree,
+        )
+
         # Lancement du traitement OCR en arrière-plan.
         # Le thread reçoit l'id du document (pas l'instance) et le recharge
         # depuis la DB — évite tout problème de concurrence ou de durée de vie.
         # daemon=True : le thread ne bloque pas l'arrêt propre du serveur.
         thread = threading.Thread(
-            target=traiter_verification_document,
+            target=traiter_verification_document_en_arriere_plan,
             args=(document.id,),
             daemon=True,
             name=f"ocr-{document.id}",
@@ -254,8 +282,16 @@ class DocumentIdentiteFichierView(APIView):
         if not document.fichier:
             return Response({"detail": "Aucun fichier associé."}, status=status.HTTP_404_NOT_FOUND)
 
-        # On renvoie le contenu réel du fichier.
-        return FileResponse(document.fichier.open("rb"), content_type="image/jpeg")
+        # On renvoie le contenu réel du fichier, avec son vrai type.
+        flux = document.fichier.open("rb")
+        debut = flux.read(8)
+        flux.seek(0)
+        content_type = (
+            "application/pdf" if debut.startswith(b"%PDF")
+            else "image/png" if debut.startswith(b"\x89PNG")
+            else "image/jpeg"
+        )
+        return FileResponse(flux, content_type=content_type)
 
 
 # Ce ViewSet permet à l'administrateur de consulter et traiter les documents en attente.
@@ -308,16 +344,19 @@ class DocumentIdentiteAdminViewSet(viewsets.ReadOnlyModelViewSet):
         document.motif_rejet = ""
         document.date_decision = timezone.now()
         document.save(update_fields=["statut", "valide_par", "motif_rejet", "date_decision"])
+        journaliser_document(
+            document, "DOCUMENT_VALIDE", f"{document.get_type_document_display()} validé par un administrateur.",
+            request.user, decision="VALIDE",
+        )
 
-        # On met aussi à jour le statut de vérification du profil prestataire.
-        document.prestataire.statut_verification = document.prestataire.StatutVerification.VERIFIE
-        document.prestataire.save(update_fields=["statut_verification"])
-
-        # On prévient le prestataire que son profil est vérifié.
+        # Le statut du prestataire n'est PAS modifié ici : valider un document
+        # n'est qu'une partie de la vérification. Seule la décision finale sur
+        # le dossier complet (DossierVerificationAdminViewSet.decision) peut
+        # rendre un prestataire VERIFIE.
         Notification.objects.create(
             utilisateur=document.prestataire.user,
-            titre="Profil vérifié",
-            message="Votre document d'identité a été validé par MIMOSY.",
+            titre="Document validé",
+            message=f"Votre document « {document.get_type_document_display()} » a été validé par MIMOSY.",
             type=Notification.Type.VERIFICATION,
         )
 
@@ -346,16 +385,22 @@ class DocumentIdentiteAdminViewSet(viewsets.ReadOnlyModelViewSet):
         document.motif_rejet = serializer.validated_data["motif"]
         document.date_decision = timezone.now()
         document.save(update_fields=["statut", "valide_par", "motif_rejet", "date_decision"])
+        journaliser_document(
+            document, "DOCUMENT_REJETE",
+            f"{document.get_type_document_display()} rejeté — {document.motif_rejet}",
+            request.user, decision="REJETE", motif=document.motif_rejet,
+        )
 
-        # On met aussi à jour le statut de vérification du profil prestataire.
-        document.prestataire.statut_verification = document.prestataire.StatutVerification.REJETE
-        document.prestataire.save(update_fields=["statut_verification"])
-
-        # On prévient le prestataire du refus et de son motif.
+        # Le prestataire devra fournir un nouveau document : le parcours le
+        # ramène automatiquement à cette étape (un document REJETE ne compte pas).
+        # Son statut global n'est décidé que sur le dossier complet.
         Notification.objects.create(
             utilisateur=document.prestataire.user,
             titre="Document refusé",
-            message=f"Votre document d'identité a été refusé : {document.motif_rejet}",
+            message=(
+                f"Votre document « {document.get_type_document_display()} » a été refusé : "
+                f"{document.motif_rejet}. Merci d'en fournir un nouveau depuis votre parcours de vérification."
+            ),
             type=Notification.Type.VERIFICATION,
         )
 

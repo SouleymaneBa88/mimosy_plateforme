@@ -62,6 +62,7 @@ class WalletTestCase(APITestCase):
     # Avant chaque test : client, prestataire, service, offre et demande de prestation acceptée.
     def setUp(self):
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="wallet_client",
             email="wallet-client@test.com",
             password="TestPassword123!",
@@ -71,6 +72,7 @@ class WalletTestCase(APITestCase):
             role=User.Role.CLIENT,
         )
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="wallet_prestataire",
             email="wallet-prestataire@test.com",
             password="TestPassword123!",
@@ -84,6 +86,7 @@ class WalletTestCase(APITestCase):
             statut_verification=ProfilPrestataire.StatutVerification.VERIFIE,
         )
         self.admin_user = User.objects.create_user(
+            email_verified=True,
             username="wallet_admin",
             email="wallet-admin@test.com",
             password="TestPassword123!",
@@ -203,6 +206,7 @@ class InitierPaiementTests(WalletTestCase):
     # Vérifie qu'un client ne peut pas payer la demande d'un autre client.
     def test_client_ne_peut_pas_payer_la_demande_dun_autre(self):
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="wallet_autre_client",
             email="wallet-autre-client@test.com",
             password="TestPassword123!",
@@ -570,6 +574,7 @@ class PayDunyaPaiementTests(WalletTestCase):
     def test_endpoint_statut_paiement_refuse_pour_un_autre_client(self):
         paiement = self._creer_paiement_en_attente()
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="wallet_autre_client_statut",
             email="wallet-autre-client-statut@test.com",
             password="TestPassword123!",
@@ -1033,6 +1038,7 @@ class MonWalletAPITests(WalletTestCase):
         initier_paiement(self.client_user, self.demande, "clef-isolation")
 
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="wallet_prestataire_2",
             email="wallet-prestataire-2@test.com",
             password="TestPassword123!",
@@ -1201,6 +1207,7 @@ class RepriseFactureTests(WalletTestCase):
     def test_cle_d_un_autre_client_ne_donne_pas_acces_a_son_paiement(self):
         initier_paiement(self.client_user, self.demande, "cle-volee")
         autre = User.objects.create_user(
+            email_verified=True,
             username="wallet_voleur", email="wallet-voleur@test.com", password="TestPassword123!",
             first_name="A", last_name="B", phone="770000070", role=User.Role.CLIENT,
         )

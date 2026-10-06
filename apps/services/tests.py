@@ -41,6 +41,7 @@ class ServicesApiTests(APITestCase):
         )
 
         cls.admin = User.objects.create_user(
+            email_verified=True,
             username="admin-services",
             email="admin-services@example.com",
             password="Password123!",
@@ -51,6 +52,7 @@ class ServicesApiTests(APITestCase):
         )
 
         cls.client_user = User.objects.create_user(
+            email_verified=True,
             username="client-services",
             email="client-services@example.com",
             password="Password123!",
@@ -61,6 +63,7 @@ class ServicesApiTests(APITestCase):
         )
 
         cls.provider_a = User.objects.create_user(
+            email_verified=True,
             username="provider-a",
             email="provider-a@example.com",
             password="Password123!",
@@ -71,6 +74,7 @@ class ServicesApiTests(APITestCase):
         )
 
         cls.provider_b = User.objects.create_user(
+            email_verified=True,
             username="provider-b",
             email="provider-b@example.com",
             password="Password123!",
@@ -501,6 +505,7 @@ class ServicesApiTests(APITestCase):
     # Vérifie qu'un utilisateur sans profil prestataire ne peut pas créer d'offre.
     def test_provider_without_profile_cannot_create_offer(self):
         provider = User.objects.create_user(
+            email_verified=True,
             username="provider-without-profile",
             email="provider-without-profile@example.com",
             password="Password123!",
@@ -522,9 +527,12 @@ class ServicesApiTests(APITestCase):
             format="json",
         )
 
+        # Sans profil, le prestataire n'a pas de dossier validé : la création
+        # est refusée dès la permission (IsPrestataireValide), avant même la
+        # validation des données.
         self.assertEqual(
             response.status_code,
-            status.HTTP_400_BAD_REQUEST,
+            status.HTTP_403_FORBIDDEN,
         )
 
     # Vérifie qu'on ne peut pas proposer un service d'une catégorie désactivée.
@@ -613,6 +621,7 @@ class RechercheAPITests(APITestCase):
         cls.competence_cablage = Competence.objects.create(nom="Câblage électrique")
 
         cls.plombier = User.objects.create_user(
+            email_verified=True,
             username="plombier-recherche",
             email="plombier-recherche@example.com",
             password="Password123!",
@@ -654,6 +663,7 @@ class RechercheAPITests(APITestCase):
         cls.offre_fuite.competences.add(cls.competence_fuite)
 
         cls.electricien = User.objects.create_user(
+            email_verified=True,
             username="electricien-recherche",
             email="electricien-recherche@example.com",
             password="Password123!",
@@ -1178,6 +1188,7 @@ class RechercheFallbackIATests(APITestCase):
         classe_client.return_value.beta.messages.create.return_value = reponse_modele
 
         client_user = User.objects.create_user(
+            email_verified=True,
             username="client-fallback",
             email="client-fallback@example.com",
             password="MotDePasseSecret123!",
@@ -1220,6 +1231,7 @@ class RechercheFallbackIATests(APITestCase):
         self.assertEqual(anonyme.status_code, status.HTTP_200_OK)
 
         client_user = User.objects.create_user(
+            email_verified=True,
             username="client-permissions",
             email="client-permissions@example.com",
             password="Password123!",
@@ -1272,6 +1284,7 @@ class RechercheProximiteAPITests(APITestCase):
         )
 
         cls.prestataire_proche_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire-proche",
             email="prestataire-proche@example.com",
             password="Password123!",
@@ -1303,6 +1316,7 @@ class RechercheProximiteAPITests(APITestCase):
         )
 
         cls.prestataire_loin_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire-loin",
             email="prestataire-loin@example.com",
             password="Password123!",
@@ -1336,6 +1350,7 @@ class RechercheProximiteAPITests(APITestCase):
         # Prestataire sans aucune Localisation : ne doit jamais casser
         # une recherche géographique, seulement en être absent.
         cls.prestataire_sans_loc_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire-sans-loc",
             email="prestataire-sans-loc@example.com",
             password="Password123!",

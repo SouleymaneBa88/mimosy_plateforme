@@ -36,6 +36,8 @@ from rest_framework.permissions import IsAuthenticated
 # On importe l'objet Response pour renvoyer une réponse HTTP.
 from rest_framework.response import Response
 
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified, IsPrestataireValide
 # On importe le modèle Notification pour prévenir les utilisateurs.
 from apps.notifications.models import Notification
 # On importe les deux modèles de cette app.
@@ -133,11 +135,12 @@ class DemandeDevisViewSet(viewsets.ModelViewSet):
           requise, par défaut restrictif.
         """
 
-        # Seul un client peut créer une nouvelle demande.
+        # Seul un client à l'e-mail confirmé peut créer une nouvelle demande.
         if self.action == "create":
             permission_classes = [
                 IsAuthenticated,
                 IsClient,
+                IsEmailVerified,
             ]
 
         # Seul le propriétaire ou un admin peut modifier/supprimer.
@@ -292,11 +295,13 @@ class ReponseDevisViewSet(viewsets.ModelViewSet):
         - Autres actions : authentification simple requise.
         """
 
-        # Seul un prestataire peut créer une nouvelle réponse.
+        # Seul un prestataire à l'e-mail confirmé et validé peut répondre à un devis.
         if self.action == "create":
             permission_classes = [
                 IsAuthenticated,
                 IsPrestataire,
+                IsEmailVerified,
+                IsPrestataireValide,
             ]
 
         # Seul le propriétaire ou un admin peut modifier/supprimer.

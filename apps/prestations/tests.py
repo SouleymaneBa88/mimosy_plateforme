@@ -21,6 +21,7 @@ class DemandePrestationAPITests(APITestCase):
         """Prépare les utilisateurs, le prestataire et une demande."""
 
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="client_test",
             email="client@test.com",
             password="TestPassword123!",
@@ -31,6 +32,7 @@ class DemandePrestationAPITests(APITestCase):
         )
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire_test",
             email="prestataire@test.com",
             password="TestPassword123!",
@@ -163,6 +165,7 @@ class DemandePrestationAPITests(APITestCase):
         """Un client ne peut pas accéder à la demande d'un autre client."""
 
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="autre_client",
             email="autre@test.com",
             password="TestPassword123!",
@@ -287,6 +290,7 @@ class DemandePrestationAPITests(APITestCase):
         """Un client qui n'est pas propriétaire de la demande ne peut pas l'annuler."""
 
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="autre_client_annulation",
             email="autre-annulation@test.com",
             password="TestPassword123!",

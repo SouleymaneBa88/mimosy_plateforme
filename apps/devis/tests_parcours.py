@@ -52,18 +52,22 @@ class ParcoursDevisTestCase(APITestCase):
     # Avant chaque test : client, prestataire vérifié, service, offre et demande de devis.
     def setUp(self):
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="parcours_client", email="parcours-client@test.com", password="TestPassword123!",
             first_name="Awa", last_name="Diop", phone="770000070", role=User.Role.CLIENT,
         )
         self.autre_client = User.objects.create_user(
+            email_verified=True,
             username="parcours_autre", email="parcours-autre@test.com", password="TestPassword123!",
             first_name="Moussa", last_name="Fall", phone="770000071", role=User.Role.CLIENT,
         )
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="parcours_prestataire", email="parcours-prestataire@test.com", password="TestPassword123!",
             first_name="Ibrahima", last_name="Ndiaye", phone="770000072", role=User.Role.PRESTATAIRE,
         )
         self.admin_user = User.objects.create_user(
+            email_verified=True,
             username="parcours_admin", email="parcours-admin@test.com", password="TestPassword123!",
             first_name="Admin", last_name="MIMOSY", phone="770000073", role=User.Role.ADMIN,
         )

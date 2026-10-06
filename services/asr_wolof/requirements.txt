@@ -1,0 +1,6 @@
+# torch est installé à part (index CPU ou CUDA) : voir Dockerfile.
+transformers==5.17.0
+numpy==2.5.3
+safetensors==0.8.0
+tokenizers==0.23.2
+huggingface_hub==1.31.0

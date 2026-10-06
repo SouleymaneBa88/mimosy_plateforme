@@ -11,7 +11,7 @@ passer par l'admin Django brut.
 """
 
 # On importe les outils de requêtes avancées (comptage conditionnel, sous-requêtes).
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Avg, Count, Exists, OuterRef, Q, Sum
 # On importe les outils de ViewSet de Django REST Framework.
 from rest_framework import viewsets
 # On importe le décorateur qui permet d'ajouter des actions personnalisées.
@@ -27,6 +27,8 @@ from rest_framework.views import APIView
 from apps.accounts.models import User
 # On importe la permission d'administration partagée.
 from apps.common.permissions import IsAdminUserRole
+# On importe les outils de statistiques mensuelles partagés avec le dashboard prestataire.
+from apps.common.statistiques import comparer_periodes, compter_par, derniers_mois, serie_mensuelle
 # On importe le modèle DemandeDevis.
 from apps.devis.models import DemandeDevis
 # On importe le modèle Litige.
@@ -47,6 +49,8 @@ from apps.reviews.models import Avis
 from apps.trust.services import calculer_score_confiance
 # On importe le modèle Payment.
 from apps.wallet.models import Payment
+# On importe le dossier de vérification (statuts du parcours).
+from apps.verification.models import DossierVerification, EvenementDossier
 
 # On importe la pagination commune au back-office admin.
 from .pagination import AdminPagination
@@ -133,7 +137,100 @@ class DashboardStatsView(APIView):
             "litiges": litiges,
             "paiements": {
                 "reussis": Payment.objects.filter(statut=Payment.Statut.REUSSI).count(),
+                "montant_total": Payment.objects.filter(statut=Payment.Statut.REUSSI).aggregate(
+                    total=Sum("montant")
+                )["total"] or 0,
             },
+            # Rendez-vous par statut (le total reste dans "rendez_vous").
+            "rendez_vous_par_statut": compter_par(RendezVous.objects, "statut"),
+            # Dossiers du parcours de vérification par statut.
+            "dossiers_verification": compter_par(DossierVerification.objects, "statut"),
+        })
+
+
+# Cette vue renvoie l'évolution mensuelle de l'activité pour les graphiques du dashboard admin.
+class TendancesView(APIView):
+    """
+    GET /api/admin/dashboard/tendances/?mois=12
+
+    Séries mensuelles calculées par agrégation SQL (jamais en chargeant
+    les lignes) sur les vraies tables. Aucune valeur n'est estimée ni
+    extrapolée : un mois sans activité vaut 0.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminUserRole]
+
+    def get(self, request):
+        try:
+            nombre = int(request.query_params.get("mois", 12))
+        except (TypeError, ValueError):
+            nombre = 12
+        nombre = max(3, min(nombre, 24))
+        mois = derniers_mois(nombre)
+
+        inscriptions = serie_mensuelle(
+            User.objects, "date_joined", mois,
+            clients=Count("id", filter=Q(role=User.Role.CLIENT)),
+            prestataires=Count("id", filter=Q(role=User.Role.PRESTATAIRE)),
+        )
+        # Demandes regroupées par mois de création, ventilées selon leur statut actuel.
+        demandes = serie_mensuelle(
+            DemandePrestation.objects, "date_creation", mois,
+            total=Count("id"),
+            terminees=Count("id", filter=Q(statut=DemandePrestation.Statut.TERMINEE)),
+            annulees=Count("id", filter=Q(statut__in=[
+                DemandePrestation.Statut.ANNULEE, DemandePrestation.Statut.REFUSEE,
+            ])),
+        )
+        paiements = serie_mensuelle(
+            Payment.objects.filter(statut=Payment.Statut.REUSSI), "date_creation", mois,
+            nombre=Count("id"),
+            montant=Sum("montant"),
+        )
+        litiges = serie_mensuelle(Litige.objects, "date_creation", mois, ouverts=Count("id"))
+        avis = serie_mensuelle(Avis.objects, "date_creation", mois, nombre=Count("id"), note_moyenne=Avg("note"))
+
+        # Répartition des demandes par catégorie de service : 5 premières + « Autres ».
+        categories = list(
+            DemandePrestation.objects.order_by()
+            .values("service__categorie__nom")
+            .annotate(n=Count("id"))
+            .order_by("-n")
+        )
+        repartition = [
+            {"categorie": ligne["service__categorie__nom"] or "Sans service précisé", "nombre": ligne["n"]}
+            for ligne in categories[:5]
+        ]
+        reste = sum(ligne["n"] for ligne in categories[5:])
+        if reste:
+            repartition.append({"categorie": "Autres", "nombre": reste})
+
+        # 30 derniers jours comparés aux 30 précédents (évolutions des KPI).
+        evolutions = {
+            **comparer_periodes(DemandePrestation.objects, "date_creation", demandes=(Count, "id")),
+            # Mêmes comptes que la courbe des inscriptions : clients et prestataires.
+            **comparer_periodes(
+                User.objects.filter(role__in=[User.Role.CLIENT, User.Role.PRESTATAIRE]), "date_joined",
+                inscriptions=(Count, "id"),
+            ),
+            **comparer_periodes(
+                Payment.objects.filter(statut=Payment.Statut.REUSSI), "date_creation",
+                paiements=(Sum, "montant"),
+            ),
+            **comparer_periodes(Litige.objects, "date_creation", litiges=(Count, "id")),
+            **comparer_periodes(Avis.objects, "date_creation", avis=(Count, "id")),
+            **comparer_periodes(RendezVous.objects, "date_creation", rendez_vous=(Count, "id")),
+        }
+
+        return Response({
+            "mois": [m.isoformat() for m in mois],
+            "evolutions": {"jours": 30, **evolutions},
+            "inscriptions": inscriptions,
+            "demandes": demandes,
+            "paiements": paiements,
+            "litiges": litiges,
+            "avis": avis,
+            "categories": repartition,
         })
 
 
@@ -143,8 +240,9 @@ class ActiviteRecenteView(APIView):
     GET /api/admin/activite/?limite=15
 
     Fusionne les événements les plus récents de plusieurs apps
-    métier (inscriptions, demandes, devis, avis, signalements,
-    paiements réussis) et les trie par date décroissante. Ne
+    métier (inscriptions, demandes, devis, rendez-vous, prestations
+    terminées, avis, signalements, litiges, paiements réussis,
+    vérifications) et les trie par date décroissante. Ne
     fabrique jamais d'événement : si aucune donnée récente n'existe,
     la liste renvoyée est simplement vide.
     """
@@ -224,6 +322,49 @@ class ActiviteRecenteView(APIView):
                 "type": "PAIEMENT_REUSSI",
                 "message": f"Paiement reçu de {paiement.client.first_name} {paiement.client.last_name} ({paiement.montant} FCFA)".strip(),
                 "date": paiement.date_modification,
+            })
+
+        # Derniers rendez-vous pris.
+        for rdv in RendezVous.objects.select_related("client", "prestataire__user").order_by("-date_creation")[:limite]:
+            evenements.append({
+                "type": "NOUVEAU_RENDEZ_VOUS",
+                "message": f"Rendez-vous de {rdv.client.first_name} {rdv.client.last_name} avec "
+                           f"{rdv.prestataire.user.first_name} {rdv.prestataire.user.last_name}".strip(),
+                "date": rdv.date_creation,
+            })
+
+        # Dernières prestations terminées (validées par le client ou automatiquement).
+        terminees = DemandePrestation.objects.filter(
+            statut=DemandePrestation.Statut.TERMINEE, date_validation__isnull=False,
+        ).select_related("prestataire__user", "service").order_by("-date_validation")[:limite]
+        for demande in terminees:
+            evenements.append({
+                "type": "PRESTATION_TERMINEE",
+                "message": f"Prestation terminée par {demande.prestataire.user.first_name} "
+                           f"{demande.prestataire.user.last_name}".strip()
+                           + (f" ({demande.service.nom})" if demande.service_id else ""),
+                "date": demande.date_validation,
+                "objet_id": str(demande.id),
+            })
+
+        # Vérification : dossiers transmis et décisions des administrateurs.
+        messages_verification = {
+            "SOUMISSION": ("VERIFICATION_SOUMISE", "Dossier de vérification transmis par {nom}"),
+            "DECISION_VALIDE": ("VERIFICATION_VALIDEE", "Prestataire validé : {nom}"),
+            "DECISION_REJETE": ("VERIFICATION_REJETEE", "Dossier rejeté : {nom}"),
+            "DECISION_A_VERIFIER": ("VERIFICATION_RENVOYEE", "Dossier renvoyé pour complément : {nom}"),
+        }
+        evenements_dossier = EvenementDossier.objects.filter(type__in=messages_verification).select_related(
+            "dossier__prestataire__user"
+        ).order_by("-date")[:limite]
+        for evenement in evenements_dossier:
+            user = evenement.dossier.prestataire.user
+            type_activite, modele = messages_verification[evenement.type]
+            evenements.append({
+                "type": type_activite,
+                "message": modele.format(nom=f"{user.first_name} {user.last_name}".strip()),
+                "date": evenement.date,
+                "objet_id": str(evenement.dossier_id),
             })
 
         # On trie tous les événements du plus récent au plus ancien.

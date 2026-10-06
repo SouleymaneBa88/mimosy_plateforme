@@ -81,6 +81,27 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Transcription du wolof par Kiriku (AIHubSN/Kiriku-Wolof-ASR) : OPTIONNEL,
+  # lancé seulement avec « docker compose --profile asr-wolof up -d ». Gros
+  # modèle (~2 milliards de paramètres) : GPU conseillé, sinon 8 Go de mémoire
+  # libre au moins. Puis ASR_WOLOF_URL=http://asr-wolof:8010 dans .env.docker.
+  # Sans lui, le wolof est transcrit par Gemini (consigne wolof).
+  asr-wolof:
+    build: ./services/asr_wolof
+    image: mimosy-asr-wolof:local
+    profiles: ["asr-wolof"]
+    env_file: .env.docker
+    volumes:
+      - hf_cache:/app/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8010/sante', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 40
+      start_period: 120s
+    networks: [interne]
+    restart: unless-stopped
+
 # Noms EXPLICITES : ils ne dépendent pas du nom du projet Compose. Sans cela,
 # « docker compose -p autre_nom » ou un renommage du projet créerait des volumes
 # neufs et vides, et les données sembleraient perdues (elles resteraient dans

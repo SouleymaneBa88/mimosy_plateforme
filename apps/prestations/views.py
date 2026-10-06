@@ -28,6 +28,8 @@ from rest_framework.response import Response
 
 # On importe le modèle User pour vérifier les rôles.
 from apps.accounts.models import User
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified
 # On importe le modèle Notification pour prévenir les utilisateurs des changements.
 from apps.notifications.models import Notification
 # On importe le modèle DemandePrestation.
@@ -76,8 +78,9 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
     # Cette méthode définit les permissions selon l'action demandée.
     def get_permissions(self):
         # Seul un client connecté peut créer une nouvelle demande.
+        # Son adresse e-mail doit aussi être confirmée.
         if self.action == "create":
-            return [IsAuthenticated(), IsClient()]
+            return [IsAuthenticated(), IsClient(), IsEmailVerified()]
         return [IsAuthenticated()]
 
     # Cette méthode construit le queryset visible selon le rôle de l'utilisateur.

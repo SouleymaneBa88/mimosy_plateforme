@@ -29,6 +29,7 @@ ORIGINE_FRONTEND = b"http://localhost:5173"
 # Petite fonction d'aide : crée un utilisateur de test avec un rôle.
 def _utilisateur(nom, role):
     return User.objects.create_user(
+        email_verified=True,
         username=nom, email=f"{nom}@example.invalid", password=None,
         first_name="Test", last_name=nom, phone=f"7{abs(hash(nom)) % 10**8:08d}", role=role,
     )

@@ -7,13 +7,34 @@ import threading
 from django.urls import reverse
 from PIL import Image
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APITransactionTestCase
 
 from apps.accounts.models import User
 from apps.profiles.models import ProfilPrestataire
 
 from .models import DocumentIdentite
 from .services import comparer_avec_profil, extraire_champs
+
+
+def decider_dossier(client, admin, profil, decision="VALIDE", motif=""):
+    """Décision finale de l'admin sur le dossier complet (parcours de vérification).
+
+    Depuis le parcours, valider/rejeter UN document ne change plus le statut du
+    prestataire : seule cette décision le fait. Le dossier est placé « en revue »
+    (parcours terminé) pour que la validation soit autorisée.
+    """
+    from apps.verification.models import DossierVerification
+    from apps.verification.parcours import obtenir_dossier
+
+    dossier = obtenir_dossier(profil)
+    DossierVerification.objects.filter(pk=dossier.pk).update(statut="DOSSIER_EN_REVUE")
+    client.force_authenticate(user=admin)
+    return client.post(
+        reverse("verification-admin-dossier-decision", args=[dossier.id]),
+        {"decision": decision, "motif": motif},
+        format="json",
+    )
+
 
 
 # Petite fonction : crée une image de test en mémoire.
@@ -26,9 +47,10 @@ def image_de_test(format_="JPEG", content_type="image/jpeg", taille=(20, 20)):
     return SimpleUploadedFile("piece.jpg", buffer.read(), content_type=content_type)
 
 
-class VerificationTestCase(APITestCase):
+class _VerificationBaseMixin:
     """
-    Classe de base pour tous les tests de vérification.
+    Données et suivi des threads communs à tous les tests de vérification
+    (voir VerificationTestCase et VerificationTransactionTestCase).
 
     Gestion des threads daemon et des connexions PostgreSQL :
     ─────────────────────────────────────────────────────────
@@ -44,8 +66,8 @@ class VerificationTestCase(APITestCase):
        donc les threads restent réellement asynchrones.
     2. tearDown : on join() chaque thread avec un timeout cumulatif.
        join() attend la fin naturelle du thread — il ne bloque que si
-       le thread tourne encore. Quand il se termine, close_old_connections()
-       dans traiter_verification_document() a déjà fermé la connexion DB.
+       le thread tourne encore. Quand il se termine,
+       traiter_verification_document_en_arriere_plan() a déjà fermé sa connexion DB.
     3. Si un thread n'est pas fini dans le délai, le test échoue
        explicitement (pas de teardown silencieux).
 
@@ -82,6 +104,7 @@ class VerificationTestCase(APITestCase):
         threading.Thread = _TrackingThread
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="verif_prestataire",
             email="verif-prestataire@test.com",
             password="TestPassword123!",
@@ -96,6 +119,7 @@ class VerificationTestCase(APITestCase):
         )
 
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="verif_client",
             email="verif-client@test.com",
             password="TestPassword123!",
@@ -106,6 +130,7 @@ class VerificationTestCase(APITestCase):
         )
 
         self.admin_user = User.objects.create_user(
+            email_verified=True,
             username="verif_admin",
             email="verif-admin@test.com",
             password="TestPassword123!",
@@ -138,6 +163,23 @@ class VerificationTestCase(APITestCase):
                 f"{self.THREAD_JOIN_TIMEOUT}s : {still_alive}. "
                 "Des connexions PostgreSQL peuvent rester ouvertes."
             )
+
+
+class VerificationTestCase(_VerificationBaseMixin, APITestCase):
+    """Classe de base des tests de vérification : chaque test tourne dans une
+    transaction annulée à la fin (isolation et rapidité)."""
+
+
+class VerificationTransactionTestCase(_VerificationBaseMixin, APITransactionTestCase):
+    """
+    Pour les SEULS tests qui attendent le résultat du thread d'analyse.
+
+    Le thread a sa propre connexion PostgreSQL : il ne voit que des données
+    validées (COMMIT). Dans un TestCase, tout reste dans la transaction du
+    test, donc le thread ne trouverait jamais le document soumis. Ici les
+    écritures sont réellement validées, puis la base est vidée après chaque
+    test (plus lent : à réserver à ces cas).
+    """
 
 
 # Tests de l'envoi de documents par le prestataire.
@@ -334,6 +376,7 @@ class FichierDocumentAPITests(VerificationTestCase):
     # Vérifie qu'un autre prestataire ne peut pas récupérer le fichier.
     def test_autre_prestataire_ne_peut_pas_recuperer_le_fichier(self):
         autre_user = User.objects.create_user(
+            email_verified=True,
             username="verif_prestataire_2",
             email="verif-prestataire-2@test.com",
             password="TestPassword123!",
@@ -398,7 +441,9 @@ class AdminVerificationAPITests(VerificationTestCase):
         self.document.refresh_from_db()
         self.profil.refresh_from_db()
         self.assertEqual(self.document.statut, DocumentIdentite.Statut.VALIDE)
-        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.VERIFIE)
+        # Valider un document ne valide pas le prestataire : seule la décision
+        # sur le dossier complet le fait (parcours de vérification).
+        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.EN_ATTENTE)
 
     # Vérifie que l'admin peut rejeter avec un motif.
     def test_admin_peut_rejeter_avec_motif(self):
@@ -410,7 +455,9 @@ class AdminVerificationAPITests(VerificationTestCase):
         self.document.refresh_from_db()
         self.profil.refresh_from_db()
         self.assertEqual(self.document.statut, DocumentIdentite.Statut.REJETE)
-        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.REJETE)
+        # Rejeter un document demande un nouveau document ; le statut du
+        # prestataire n'est décidé que sur le dossier complet.
+        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.EN_ATTENTE)
         self.assertTrue(self.document.motif_rejet)
 
     # Vérifie qu'un rejet sans motif est refusé.
@@ -730,11 +777,12 @@ class PublicationSansCNITests(_PublicationBaseTestCase):
     def test_service_non_visible_dans_liste_publique_sans_cni(self):
         self.assertFalse(self._liste_publique_offres())
 
-    def test_creation_offre_toujours_possible_sans_cni(self):
+    def test_creation_offre_refusee_avant_validation_du_dossier(self):
         """
-        Un prestataire peut créer une offre même sans CNI validée.
-        L'offre est stockée comme brouillon (est_publiable=False),
-        elle n'est pas refusée par l'API.
+        Règle du parcours de vérification : tant que son dossier n'est pas
+        validé par un administrateur, un prestataire ne peut pas publier
+        d'offre (403, IsPrestataireValide). Avant le parcours, l'offre était
+        acceptée comme brouillon non publiable.
         """
         # Supprimer l'offre créée dans setUp pour pouvoir en créer une nouvelle.
         self.offre.delete()
@@ -749,9 +797,8 @@ class PublicationSansCNITests(_PublicationBaseTestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        # est_publiable doit être False (CNI non validée).
-        self.assertFalse(response.data["est_publiable"])
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(PrestataireService.objects.filter(prestataire=self.profil).exists())
 
 
 class PublicationCNIEnAnalyseTests(_PublicationBaseTestCase):
@@ -994,7 +1041,8 @@ class FluxValidationAdminTests(VerificationTestCase):
         """
         Soumet un document → statut EN_ANALYSE (202 immédiat).
         On force manuellement A_VERIFIER (simule la fin du thread asynchrone).
-        Admin valide → statut_verification = VERIFIE.
+        Admin valide le document : le prestataire n'est pas encore VERIFIE.
+        Admin valide le dossier complet → statut_verification = VERIFIE.
         L'offre apparaît dans la recherche.
         """
         # 1. Soumission par le prestataire.
@@ -1022,14 +1070,22 @@ class FluxValidationAdminTests(VerificationTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["statut"], DocumentIdentite.Statut.VALIDE)
 
-        # 3. Profil prestataire mis à jour.
+        # 3. Le document seul ne suffit pas : l'offre reste invisible.
+        self.profil.refresh_from_db()
+        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.EN_ATTENTE)
+        self.client.force_authenticate(user=None)
+        response = self.client.get(reverse("recherche"), {"service": "Nettoyage de vitres"})
+        self.assertNotIn(str(self.offre.id), [item["id"] for item in response.data.get("results", [])])
+
+        # 4. Décision finale sur le dossier complet : profil vérifié.
+        self.assertEqual(decider_dossier(self.client, self.admin_user, self.profil).status_code, status.HTTP_200_OK)
         self.profil.refresh_from_db()
         self.assertEqual(
             self.profil.statut_verification,
             ProfilPrestataire.StatutVerification.VERIFIE,
         )
 
-        # 4. L'offre est maintenant visible dans la recherche.
+        # 5. L'offre est maintenant visible dans la recherche.
         self.client.force_authenticate(user=None)
         response = self.client.get(reverse("recherche"), {"service": "Nettoyage de vitres"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -1056,13 +1112,11 @@ class FluxValidationAdminTests(VerificationTestCase):
                 ).data.get("results", [])
             ]
         )
-        # Rejeter.
-        self.client.force_authenticate(user=self.admin_user)
-        self.client.post(
-            reverse("verification-admin-document-rejeter", kwargs={"pk": document.id}),
-            {"motif": "Document illisible, veuillez en soumettre un nouveau."},
-            format="json",
+        # Rejeter : décision finale de l'admin sur le dossier.
+        reponse = decider_dossier(
+            self.client, self.admin_user, self.profil, "REJETE", "Document illisible, veuillez en soumettre un nouveau."
         )
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
         self.profil.refresh_from_db()
         self.assertEqual(
             self.profil.statut_verification,
@@ -1789,6 +1843,14 @@ class Soumission202APITests(VerificationTestCase):
             delai_max_acceptable,
             f"La réponse HTTP a pris {duree:.3f}s — le thread bloque encore le HTTP.",
         )
+
+
+class TraitementArrierePlanReelTests(VerificationTransactionTestCase):
+    """
+    Tests 5-6 : le thread lancé par le POST traite réellement le document.
+    TransactionTestCase car le thread (autre connexion) doit voir le document
+    validé en base (voir VerificationTransactionTestCase).
+    """
 
     def test_traitement_en_arriere_plan_produit_a_verifier(self):
         """

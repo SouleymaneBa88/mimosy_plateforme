@@ -21,6 +21,7 @@ class SuppressionDevisAPITests(APITestCase):
         """Prépare un client, un prestataire et une demande de devis avec sa réponse."""
 
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="client_devis_test",
             email="client-devis@test.com",
             password="TestPassword123!",
@@ -31,6 +32,7 @@ class SuppressionDevisAPITests(APITestCase):
         )
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire_devis_test",
             email="prestataire-devis@test.com",
             password="TestPassword123!",
@@ -119,6 +121,7 @@ class SuppressionDevisAPITests(APITestCase):
         """La suppression est désactivée pour tous les rôles, y compris l'administration."""
 
         admin_user = User.objects.create_user(
+            email_verified=True,
             username="admin_devis_test",
             email="admin-devis@test.com",
             password="TestPassword123!",
@@ -151,6 +154,7 @@ class DevisPermissionsAPITests(APITestCase):
         """Prépare deux clients et deux prestataires indépendants."""
 
         self.client_a = User.objects.create_user(
+            email_verified=True,
             username="client_a_devis",
             email="client-a-devis@test.com",
             password="TestPassword123!",
@@ -160,6 +164,7 @@ class DevisPermissionsAPITests(APITestCase):
             role=User.Role.CLIENT,
         )
         self.client_b = User.objects.create_user(
+            email_verified=True,
             username="client_b_devis",
             email="client-b-devis@test.com",
             password="TestPassword123!",
@@ -170,6 +175,7 @@ class DevisPermissionsAPITests(APITestCase):
         )
 
         self.prestataire_a_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire_a_devis",
             email="prestataire-a-devis@test.com",
             password="TestPassword123!",
@@ -179,6 +185,7 @@ class DevisPermissionsAPITests(APITestCase):
             role=User.Role.PRESTATAIRE,
         )
         self.prestataire_b_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire_b_devis",
             email="prestataire-b-devis@test.com",
             password="TestPassword123!",

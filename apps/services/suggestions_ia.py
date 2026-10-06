@@ -22,7 +22,8 @@ Garanties :
       recherche normale continue de fonctionner.
 
 Configuration (variables d'environnement, voir config/settings.py) :
-RECHERCHE_IA_ACTIVE, ANTHROPIC_API_KEY, RECHERCHE_IA_MODELE,
+RECHERCHE_IA_ACTIVE, IA_FOURNISSEUR + GEMINI_API_KEY ou ANTHROPIC_API_KEY
+(voir apps.common.ia_fournisseurs), RECHERCHE_IA_MODELE (Claude uniquement),
 RECHERCHE_IA_TIMEOUT, RECHERCHE_IA_CACHE_SECONDES.
 """
 
@@ -144,63 +145,34 @@ def _appeler_modele(requete: str, catalogue: dict[str, dict]) -> dict:
     statut "indisponible".
     """
 
-    # Import local : le SDK n'est chargé que si le fallback est réellement utilisé.
-    import anthropic
-
-    client = anthropic.Anthropic(
-        api_key=settings.ANTHROPIC_API_KEY or None,
-        timeout=settings.RECHERCHE_IA_TIMEOUT,
-        # Pas de nouvel essai : le client attend déjà une réponse de recherche.
-        max_retries=0,
-    )
+    # Fournisseur choisi par IA_FOURNISSEUR (Gemini ou Claude), voir
+    # apps.common.ia_fournisseurs. Import local : rien n'est chargé si le
+    # fallback n'est jamais utilisé.
+    from apps.common.ia_fournisseurs import generer_json
 
     # Seuls les noms (et la catégorie de chaque service) sont transmis.
     elements_catalogue = [
         {"libelle": entree["libelle"], "type": entree["type"], "categorie": entree["categorie"]}
         for entree in catalogue.values()
     ]
-
-    reponse = client.beta.messages.create(
-        model=settings.RECHERCHE_IA_MODELE,
-        max_tokens=4000,
-        system=CONSIGNES_SYSTEME,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"<catalogue>{json.dumps(elements_catalogue, ensure_ascii=False)}</catalogue>\n"
-                    f"<recherche_client>{requete}</recherche_client>"
-                ),
-            }
-        ],
-        thinking={"type": "adaptive"},
-        # Tâche de classification courte : un effort bas suffit et reste rapide.
-        output_config={
-            "effort": "low",
-            "format": {
-                "type": "json_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "besoin_compris": {"type": "string"},
-                        # Énumération fermée : le modèle ne peut pas inventer de libellé.
-                        "suggestions": {"type": "array", "items": {"type": "string", "enum": list(catalogue)}},
-                    },
-                    "required": ["besoin_compris", "suggestions"],
-                    "additionalProperties": False,
-                },
+    return generer_json(
+        CONSIGNES_SYSTEME,
+        f"<catalogue>{json.dumps(elements_catalogue, ensure_ascii=False)}</catalogue>\n"
+        f"<recherche_client>{requete}</recherche_client>",
+        {
+            "type": "object",
+            "properties": {
+                "besoin_compris": {"type": "string"},
+                # Énumération fermée : le modèle ne peut pas inventer de libellé.
+                "suggestions": {"type": "array", "items": {"type": "string", "enum": list(catalogue)}},
             },
+            "required": ["besoin_compris", "suggestions"],
+            "additionalProperties": False,
         },
-        # Si le modèle refuse la requête, l'API la relance sur un modèle de repli.
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
+        rapide=True,
+        timeout=settings.RECHERCHE_IA_TIMEOUT,
+        modele_anthropic=settings.RECHERCHE_IA_MODELE,
     )
-
-    if reponse.stop_reason != "end_turn":
-        raise ValueError(f"réponse incomplète du modèle (stop_reason={reponse.stop_reason})")
-
-    texte = next(bloc.text for bloc in reponse.content if bloc.type == "text")
-    return json.loads(texte)
 
 
 # Cette fonction construit la réponse du fallback IA pour une requête sans résultat.

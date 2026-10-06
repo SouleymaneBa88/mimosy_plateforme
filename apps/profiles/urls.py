@@ -43,6 +43,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 # On importe le ViewSet à relier aux URLs.
+from .tableau_de_bord import TableauDeBordPrestataireView
 from .views import PrestataireViewSet
 
 # basename="prestataire" est requis car PrestataireViewSet définit
@@ -65,6 +66,13 @@ urlpatterns = [
     # Le mapping {"get": "me", "patch": "me"} indique à DRF
     # d'appeler la méthode me() du ViewSet aussi bien pour les
     # requêtes GET (consultation) que PATCH (mise à jour partielle).
+    # Tableau de bord du prestataire connecté (statistiques agrégées).
+    path(
+        "profil/prestataire/tableau-de-bord/",
+        TableauDeBordPrestataireView.as_view(),
+        name="tableau-de-bord-prestataire",
+    ),
+
     path(
         "profil/prestataire/",
         PrestataireViewSet.as_view({"get": "me", "patch": "me"}),

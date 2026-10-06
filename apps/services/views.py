@@ -48,6 +48,8 @@ from .nlp import interpreter_requete, mots_non_reconnus
 from .suggestions_ia import suggerer_recherches
 # Recherche locale optionnelle ; ses erreurs deviennent toujours un fallback.
 from .recherche_semantique import rechercher_offres_semantiques
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified, IsPrestataireValide
 # On importe les permissions personnalisées de cette app.
 from .permissions import IsAdmin, IsOwnerOrAdmin, IsPrestataire
 # On importe tous les serializers utilisés dans ce fichier.
@@ -447,11 +449,14 @@ class PrestataireServiceViewSet(viewsets.ModelViewSet):
         if self.action in ["list", "retrieve"]:
             return [AllowAny()]
 
-        # Seul un prestataire connecté peut créer une nouvelle offre.
+        # Seul un prestataire connecté, à l'e-mail confirmé et VALIDÉ par
+        # l'administration (parcours de vérification), peut publier une offre.
         if self.action == "create":
             return [
                 IsAuthenticated(),
                 IsPrestataire(),
+                IsEmailVerified(),
+                IsPrestataireValide(),
             ]
 
         # Toute autre action nécessite d'être propriétaire ou admin.

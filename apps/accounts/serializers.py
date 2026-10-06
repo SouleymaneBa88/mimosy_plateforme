@@ -7,11 +7,30 @@ from rest_framework import serializers
 # On importe le serializer de base qui génère les jetons JWT à la connexion.
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+# Indique si un prestataire a été validé (parcours de vérification).
+from apps.verification.parcours import prestataire_valide as _prestataire_valide
+
+
+def prestataire_valide(user):
+    if user.role != User.Role.PRESTATAIRE:
+        return None
+    return _prestataire_valide(user)
+
+
 # On importe le modèle ProfilPrestataire pour créer un profil au bon moment.
 from apps.profiles.models import ProfilPrestataire
 
 # On importe le modèle User.
 from .models import User
+# On importe les règles de saisie partagées (nom, téléphone, mot de passe).
+from .validators import (
+    MOT_DE_PASSE_LONGUEUR_MAX,
+    NOM_LONGUEUR_MAX,
+    formats_equivalents_telephone,
+    valider_mot_de_passe,
+    valider_nom,
+    valider_telephone,
+)
 
 # Formats d'image réellement acceptés pour une photo de profil. Seuls
 # ces formats sont utiles pour un avatar affiché sur le site ; on évite
@@ -29,17 +48,44 @@ ROLES_INSCRIPTION_AUTORISES = (User.Role.CLIENT, User.Role.PRESTATAIRE)
 
 # Ce serializer valide et crée un nouveau compte utilisateur.
 class RegisterSerializer(serializers.ModelSerializer):
-    """Valide les donnees recues lors de la creation d'un compte."""
+    """Valide les donnees recues lors de la creation d'un compte.
 
-    # Le mot de passe, jamais renvoyé dans une réponse, au moins 8 caractères.
+    Toutes les règles sont vérifiées ici, même si le frontend les
+    contrôle déjà : une requête envoyée directement à l'API ne doit
+    jamais pouvoir les contourner (voir apps/accounts/validators.py).
+    Seuls les champs listés dans Meta.fields sont lus : un champ ajouté
+    à la requête (is_staff, is_superuser, email_verified...) est ignoré.
+    """
+
+    # Champs redéclarés pour remplacer les validateurs automatiques du
+    # modèle (unicité sensible à la casse, messages en anglais) par les
+    # règles MIMOSY ci-dessous.
+    first_name = serializers.CharField(max_length=NOM_LONGUEUR_MAX * 2)
+    last_name = serializers.CharField(max_length=NOM_LONGUEUR_MAX * 2)
+    email = serializers.EmailField(
+        max_length=254,
+        error_messages={"invalid": "Veuillez saisir une adresse e-mail valide."},
+    )
+    phone = serializers.CharField(max_length=30)
+    # Seuls CLIENT et PRESTATAIRE sont proposés ; facultatif (CLIENT par défaut).
+    role = serializers.ChoiceField(
+        choices=ROLES_INSCRIPTION_AUTORISES,
+        required=False,
+        error_messages={"invalid_choice": "Le rôle doit être CLIENT ou PRESTATAIRE."},
+    )
+
+    # Le mot de passe, jamais renvoyé dans une réponse. Pas de retrait
+    # silencieux des espaces : un mot de passe n'est jamais modifié.
     password = serializers.CharField(
         write_only=True,
-        min_length=8
+        trim_whitespace=False,
+        max_length=MOT_DE_PASSE_LONGUEUR_MAX,
     )
 
     # La confirmation du mot de passe, jamais renvoyée dans une réponse.
     password_confirm = serializers.CharField(
-        write_only=True
+        write_only=True,
+        trim_whitespace=False,
     )
 
     # La case "j'accepte les conditions", jamais renvoyée dans une réponse.
@@ -75,9 +121,52 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         return value
 
+    # Prénom et nom : lettres (accents compris), espaces, apostrophes, tirets.
+    def validate_first_name(self, value):
+        return valider_nom(value, "Le prénom")
+
+    def validate_last_name(self, value):
+        return valider_nom(value, "Le nom")
+
+    # E-mail : domaine mis en minuscules (normalisation standard de Django),
+    # unicité vérifiée sans tenir compte de la casse.
+    def validate_email(self, value):
+        email = User.objects.normalize_email(value.strip())
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError("Cette adresse e-mail est déjà utilisée.")
+        return email
+
+    # Téléphone : 9 chiffres d'un mobile sénégalais, unicité tous formats confondus.
+    def validate_phone(self, value):
+        numero = valider_telephone(value)
+        if User.objects.filter(phone__in=formats_equivalents_telephone(numero)).exists():
+            raise serializers.ValidationError("Ce numéro de téléphone est déjà utilisé.")
+        return numero
+
+    # Mot de passe : jamais d'espace au début ou à la fin (la connexion les
+    # retirerait, le compte deviendrait inaccessible).
+    def validate_password(self, value):
+        if value != value.strip():
+            raise serializers.ValidationError(
+                "Le mot de passe ne doit pas commencer ni se terminer par un espace."
+            )
+        return value
+
     # Cette méthode vérifie les règles globales du formulaire d'inscription.
     def validate(self, attrs):
         """Controle la confirmation du mot de passe et les conditions."""
+
+        # Règles du mot de passe, avec un utilisateur provisoire pour refuser
+        # un mot de passe trop proche du nom ou de l'e-mail.
+        utilisateur_provisoire = User(
+            email=attrs.get("email", ""),
+            first_name=attrs.get("first_name", ""),
+            last_name=attrs.get("last_name", ""),
+        )
+        try:
+            valider_mot_de_passe(attrs["password"], user=utilisateur_provisoire)
+        except serializers.ValidationError as erreur:
+            raise serializers.ValidationError({"password": erreur.detail}) from None
 
         # Les deux mots de passe saisis doivent être identiques.
         if attrs["password"] != attrs["password_confirm"]:
@@ -147,6 +236,13 @@ class LoginSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         """Ajoute le profil utilisateur a la reponse de connexion."""
 
+        # L'e-mail est unique sans tenir compte de la casse : « Awa@Mail.com »
+        # désigne le même compte que « awa@mail.com ». On retrouve l'adresse
+        # exacte enregistrée avant l'authentification standard.
+        email_saisi = (attrs.get(self.username_field) or "").strip()
+        compte = User.objects.filter(email__iexact=email_saisi).only("email").first()
+        attrs[self.username_field] = compte.email if compte else email_saisi
+
         # On récupère d'abord les jetons JWT standards.
         data = super().validate(attrs)
 
@@ -159,6 +255,11 @@ class LoginSerializer(TokenObtainPairSerializer):
             "phone": self.user.phone,
             "profile_photo": self.user.profile_photo.url if self.user.profile_photo else "",
             "role": self.user.role,
+            # Permet au frontend d'afficher un rappel « confirmez votre e-mail ».
+            "email_verified": self.user.email_verified,
+            # Prestataire validé par l'administration (parcours de vérification) ;
+            # None pour les autres rôles.
+            "prestataire_valide": prestataire_valide(self.user),
         }
 
         return data
@@ -180,6 +281,8 @@ class ProfileSerializer(serializers.ModelSerializer):
     telephone = serializers.CharField(source="phone", read_only=True)
     # La photo est calculée pour renvoyer une URL complète.
     photo = serializers.SerializerMethodField()
+    # Prestataire validé par l'administration (None pour les autres rôles).
+    prestataire_valide = serializers.SerializerMethodField()
 
     # Cette classe interne configure quel modèle et quels champs utiliser.
     class Meta:
@@ -194,6 +297,8 @@ class ProfileSerializer(serializers.ModelSerializer):
             "telephone",
             "photo",
             "role",
+            "email_verified",
+            "prestataire_valide",
         ]
         # Ces champs ne peuvent pas être modifiés par l'utilisateur.
         # Email et téléphone sont l'identifiant de connexion et le canal
@@ -202,7 +307,17 @@ class ProfileSerializer(serializers.ModelSerializer):
         # donc les laisser modifiables ici permettrait de changer son
         # identifiant sans aucun contrôle. Ils restent protégés en
         # lecture seule tant que ce processus séparé n'existe pas.
-        read_only_fields = ["id", "role", "email", "telephone"]
+        read_only_fields = ["id", "role", "email", "telephone", "email_verified"]
+
+    # Mêmes règles qu'à l'inscription : un PATCH direct ne peut pas les contourner.
+    def validate_first_name(self, value):
+        return valider_nom(value, "Le prénom")
+
+    def validate_last_name(self, value):
+        return valider_nom(value, "Le nom")
+
+    def get_prestataire_valide(self, obj):
+        return prestataire_valide(obj)
 
     # Cette méthode calcule le nom complet à afficher.
     def get_nom_complet(self, obj):
@@ -288,3 +403,22 @@ class ProfilePhotoSerializer(serializers.ModelSerializer):
         value.seek(0)
 
         return value
+
+
+# Ce serializer reçoit le jeton du lien de confirmation d'e-mail.
+class VerifyEmailSerializer(serializers.Serializer):
+    """Jeton reçu par e-mail. Aucun identifiant d'utilisateur n'est accepté :
+    c'est le jeton seul qui désigne le compte à confirmer."""
+
+    token = serializers.CharField(max_length=200, trim_whitespace=True)
+
+
+# Ce serializer reçoit l'adresse pour laquelle on redemande un lien.
+class ResendVerificationEmailSerializer(serializers.Serializer):
+    """Adresse e-mail du compte qui demande un nouveau lien (visiteur non
+    connecté ; un utilisateur connecté est identifié par son jeton JWT)."""
+
+    email = serializers.EmailField(
+        required=False,
+        error_messages={"invalid": "Veuillez saisir une adresse e-mail valide."},
+    )

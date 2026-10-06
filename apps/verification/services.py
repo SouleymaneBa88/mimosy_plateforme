@@ -110,6 +110,8 @@ OCR_MODEL = "microsoft/trocr-base-printed"
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/jpeg": b"\xff\xd8\xff",
     "image/png":  b"\x89PNG",     # \x89\x50\x4e\x47
+    # PDF : accepté uniquement pour les justificatifs professionnels (voir views.py).
+    "application/pdf": b"%PDF",
 }
 # Nombre d'octets à lire pour identifier le format (max des signatures ci-dessus).
 _MAGIC_BYTES_MAX_LEN = max(len(sig) for sig in _MAGIC_BYTES.values())
@@ -1168,16 +1170,16 @@ def traiter_verification_document(document_id) -> None:
     """
     Point d'entrée du traitement OCR en arrière-plan.
 
-    Conçue pour être exécutée dans un thread daemon (voir views.py) ou,
+    Exécutée dans un thread daemon via traiter_verification_document_en_arriere_plan
+    (voir views.py), qui ferme ensuite la connexion du thread ; ou,
     ultérieurement, dans une tâche Celery — remplacer alors :
-        threading.Thread(target=traiter_verification_document, args=(doc.id,))
+        threading.Thread(target=traiter_verification_document_en_arriere_plan, args=(doc.id,))
     par :
         traiter_verification_document.delay(doc.id)
     sans modifier cette fonction.
 
     Workflow :
-        1. Fermeture des connexions DB héritées du thread parent (gestion
-           du pool Django dans les threads non-principaux).
+        1. (Aucune gestion de connexion ici : voir la fonction d'arrière-plan.)
         2. Recharge le document depuis la DB.
         3. Vérifie que le document est toujours EN_ANALYSE (protection
            contre les doubles traitements).
@@ -1196,23 +1198,13 @@ def traiter_verification_document(document_id) -> None:
         document_id: UUID de l'instance DocumentIdentite à traiter.
     """
     # Import ici pour éviter les imports circulaires (models → services).
-    from django.db import close_old_connections
     from django.utils import timezone
     from .models import DocumentIdentite
     from apps.notifications.models import Notification
 
-    # ── 0. Gestion des connexions DB dans le thread ───────────────────────
-    # Django maintient un pool de connexions par thread. Un thread daemon
-    # hérite de la connexion du thread parent, mais cette connexion
-    # appartient au thread parent — réutiliser la même connexion depuis
-    # deux threads simultanément corrompt l'état du protocole PostgreSQL.
-    # close_old_connections() est la méthode officielle Django pour libérer
-    # les connexions périmées/partagées dans les threads non-principaux.
-    # Elle est idempotente et sans risque si appelée depuis le thread principal.
-    # Effet de bord utile : quand Django détruit la base de test à la fin de
-    # la suite, les connexions ouvertes par les threads daemon ont été fermées
-    # proprement → plus d'erreur "database is being accessed by other users".
-    close_old_connections()
+    # Connexions à la base : cette fonction n'en ouvre ni n'en ferme aucune.
+    # Dans le thread d'arrière-plan, c'est traiter_verification_document_en_arriere_plan()
+    # qui ferme la connexion du thread une fois le traitement terminé.
 
     # ── 1. Recharger le document depuis la DB ────────────────────────────
     try:
@@ -1274,7 +1266,10 @@ def traiter_verification_document(document_id) -> None:
                 "le motif_rejet du document %s.",
                 document_id,
             )
+        _journaliser_analyse(document, erreur=True)
         return
+
+    _journaliser_analyse(document)
 
     # ── 5. Notification prestataire ──────────────────────────────────────
     # L'analyse est terminée, le statut est maintenant A_VERIFIER.
@@ -1298,3 +1293,60 @@ def traiter_verification_document(document_id) -> None:
             "notification pour le document %s.",
             document_id,
         )
+
+
+def traiter_verification_document_en_arriere_plan(document_id) -> None:
+    """
+    Cible du thread daemon lancé par la soumission d'un document (views.py).
+
+    Django ouvre une connexion par thread : celle de ce thread n'appartient
+    qu'à lui et n'est jamais refermée automatiquement (aucun cycle de
+    requête HTTP ne le fait). On la ferme donc à la fin du traitement, même
+    en cas d'erreur, pour ne laisser aucune connexion PostgreSQL ouverte.
+
+    À n'appeler QUE comme cible d'un thread : dans le thread principal,
+    fermer la connexion couperait la transaction en cours (requête, test).
+    """
+
+    from django.db import connections
+
+    try:
+        traiter_verification_document(document_id)
+    finally:
+        connections.close_all()
+
+
+def _journaliser_analyse(document, erreur=False) -> None:
+    """Trace la fin de la lecture automatique dans l'historique du dossier.
+
+    Fige le résultat (statut, score, champs comparés) : un remplacement
+    ultérieur du document l'écrasera, l'historique doit en garder trace.
+    Une trace ratée n'interrompt jamais le traitement.
+    """
+
+    from .parcours import journaliser_document
+
+    try:
+        document.refresh_from_db()
+        if erreur:
+            journaliser_document(
+                document, "ANALYSE_ERREUR",
+                f"Lecture automatique de « {document.get_type_document_display()} » interrompue (erreur technique).",
+            )
+            return
+        comparaison = document.resultat_comparaison or {}
+        champs = {
+            cle: champ.get("correspond")
+            for cle, champ in (comparaison.get("champs") or {}).items()
+            if isinstance(champ, dict)
+        }
+        journaliser_document(
+            document, "ANALYSE_DOCUMENT",
+            f"Lecture automatique de « {document.get_type_document_display()} » terminée : "
+            "document transmis à l'administration pour décision.",
+            score=document.score_correspondance,
+            etat_ocr=(comparaison.get("ocr") or {}).get("etat"),
+            correspondances=champs,
+        )
+    except Exception:
+        logger.exception("[traiter_verification_document] Historique non mis à jour pour %s.", document.id)

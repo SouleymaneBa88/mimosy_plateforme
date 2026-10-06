@@ -5,6 +5,8 @@ from rest_framework import mixins, permissions, viewsets
 # On importe la limitation de débit qui utilise une portée nommée (scope).
 from rest_framework.throttling import ScopedRateThrottle
 
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified
 # On importe le modèle Message.
 from .models import Message
 # On importe le serializer associé.
@@ -27,8 +29,9 @@ class MessageViewSet(
 
     # Le serializer utilisé pour valider et formater les données.
     serializer_class = MessageSerializer
-    # Seuls les utilisateurs connectés peuvent utiliser la messagerie.
-    permission_classes = [permissions.IsAuthenticated]
+    # Seuls les utilisateurs connectés peuvent utiliser la messagerie ; envoyer
+    # un message (POST) exige en plus une adresse e-mail confirmée.
+    permission_classes = [permissions.IsAuthenticated, IsEmailVerified]
 
     # Cette méthode choisit quelle limite de débit appliquer selon l'action.
     def get_throttles(self):

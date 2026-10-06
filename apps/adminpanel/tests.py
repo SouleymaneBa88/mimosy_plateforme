@@ -233,3 +233,117 @@ class DashboardLitigesStatsAPITests(AdminPanelTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("litiges", response.data)
         self.assertEqual(response.data["litiges"]["total"], 0)
+
+
+# Tests des séries mensuelles du dashboard admin (graphiques).
+class TendancesAPITests(AdminPanelTestCase):
+    def test_reserve_aux_admins(self):
+        self.client.force_authenticate(user=self.prestataire_user)
+        self.assertEqual(self.client.get(reverse("admin-dashboard-tendances")).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_series_issues_des_vraies_donnees(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get(reverse("admin-dashboard-tendances"), {"mois": 6})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["mois"]), 6)
+        # Le mois courant (dernier point) contient la demande et les inscriptions du setUp.
+        self.assertEqual(response.data["demandes"]["total"][-1], 1)
+        self.assertEqual(sum(response.data["demandes"]["total"]), 1)
+        self.assertEqual(response.data["inscriptions"]["clients"][-1], 1)
+        self.assertEqual(response.data["inscriptions"]["prestataires"][-1], 1)
+        self.assertEqual(response.data["categories"], [{"categorie": "Plomberie", "nombre": 1}])
+        # Aucun avis : la moyenne reste vide, jamais 0.
+        self.assertEqual(response.data["avis"]["note_moyenne"], [None] * 6)
+
+    def test_nombre_de_mois_borne(self):
+        self.client.force_authenticate(user=self.admin_user)
+        self.assertEqual(len(self.client.get(reverse("admin-dashboard-tendances"), {"mois": 99}).data["mois"]), 24)
+        self.assertEqual(len(self.client.get(reverse("admin-dashboard-tendances"), {"mois": "x"}).data["mois"]), 12)
+
+
+# Tableau de bord du prestataire connecté.
+class TableauDeBordPrestataireAPITests(AdminPanelTestCase):
+    def test_reserve_au_prestataire(self):
+        self.client.force_authenticate(user=self.client_user)
+        self.assertEqual(self.client.get(reverse("tableau-de-bord-prestataire")).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_ne_compte_que_ses_propres_donnees(self):
+        autre = User.objects.create_user(
+            username="autre_prest", email="autre@test.com", password="TestPassword123!",
+            phone="770100009", role=User.Role.PRESTATAIRE,
+        )
+        autre_profil = ProfilPrestataire.objects.create(user=autre)
+        DemandePrestation.objects.create(
+            client=self.client_user, prestataire=autre_profil, service=self.service, description="x",
+            date_souhaitee="2026-12-01T10:00:00Z", budget=Decimal("1000"),
+        )
+        self.client.force_authenticate(user=self.prestataire_user)
+
+        response = self.client.get(reverse("tableau-de-bord-prestataire"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["demandes"]["par_statut"], {"EN_ATTENTE": 1})
+        self.assertEqual(response.data["demandes"]["serie"]["recues"][-1], 1)
+        self.assertEqual(response.data["revenus"]["total_libere"], 0)
+        self.assertIsNone(response.data["avis"]["note_moyenne"])
+        self.assertEqual(response.data["statut_verification"], "VERIFIE")
+
+
+# Activité récente : rendez-vous, prestations terminées et vérifications.
+class ActiviteEnrichieAPITests(AdminPanelTestCase):
+    def test_prestation_terminee_et_verification_apparaissent(self):
+        from django.utils import timezone
+
+        from apps.verification.models import DossierVerification, EvenementDossier
+
+        self.demande.statut = DemandePrestation.Statut.TERMINEE
+        self.demande.date_validation = timezone.now()
+        self.demande.save()
+        dossier = DossierVerification.objects.create(prestataire=self.profil)
+        EvenementDossier.objects.create(dossier=dossier, type="DECISION_VALIDE", message="Décision : Validé")
+        EvenementDossier.objects.create(dossier=dossier, type="COHERENCE", message="interne")
+        self.client.force_authenticate(user=self.admin_user)
+
+        resultats = self.client.get(reverse("admin-activite"), {"limite": 50}).data["resultats"]
+        types = [r["type"] for r in resultats]
+
+        self.assertIn("PRESTATION_TERMINEE", types)
+        self.assertIn("VERIFICATION_VALIDEE", types)
+        # Les étapes internes du parcours ne remontent pas dans l'activité globale.
+        self.assertEqual(types.count("VERIFICATION_VALIDEE"), 1)
+        validee = next(r for r in resultats if r["type"] == "VERIFICATION_VALIDEE")
+        self.assertEqual(validee["objet_id"], str(dossier.id))
+        self.assertIn("Moussa Ndiaye", validee["message"])
+
+
+# Évolutions des KPI : 30 derniers jours contre les 30 précédents.
+class EvolutionsAPITests(AdminPanelTestCase):
+    def test_compare_deux_periodes_de_meme_duree(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        for jours in (45, 90):
+            demande = DemandePrestation.objects.create(
+                client=self.client_user, prestataire=self.profil, service=self.service, description="x",
+                date_souhaitee="2026-12-01T10:00:00Z", budget=Decimal("1000"),
+            )
+            # date_creation est en auto_now_add : on la recule après création.
+            DemandePrestation.objects.filter(pk=demande.pk).update(date_creation=timezone.now() - timedelta(days=jours))
+        self.client.force_authenticate(user=self.admin_user)
+
+        evolutions = self.client.get(reverse("admin-dashboard-tendances")).data["evolutions"]
+
+        self.assertEqual(evolutions["jours"], 30)
+        # setUp : 1 demande récente ; 1 entre 30 et 60 jours ; celle à 90 jours est hors comparaison.
+        self.assertEqual(evolutions["demandes"], {"actuel": 1, "precedent": 1})
+        self.assertEqual(evolutions["paiements"], {"actuel": 0, "precedent": 0})
+
+    def test_evolutions_prestataire(self):
+        self.client.force_authenticate(user=self.prestataire_user)
+
+        evolutions = self.client.get(reverse("tableau-de-bord-prestataire")).data["evolutions"]
+
+        self.assertEqual(evolutions["demandes"], {"actuel": 1, "precedent": 0})
+        self.assertEqual(evolutions["revenus"], {"actuel": 0, "precedent": 0})

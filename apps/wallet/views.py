@@ -42,7 +42,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 # On importe la règle commune « est administrateur ».
-from apps.common.permissions import is_admin_user
+from apps.common.permissions import IsEmailVerified, is_admin_user
 # On importe le modèle DemandePrestation.
 from apps.prestations.models import DemandePrestation
 
@@ -145,8 +145,9 @@ class MesTransactionsView(APIView):
 class MesRetraitsView(APIView):
     """GET/POST /api/wallet/mes-retraits/ : historique + demande de retrait."""
 
-    # Seul un prestataire connecté peut consulter ou demander un retrait.
-    permission_classes = [IsAuthenticated, IsPrestataire]
+    # Seul un prestataire connecté peut consulter ou demander un retrait ;
+    # la demande (POST) exige en plus un e-mail confirmé.
+    permission_classes = [IsAuthenticated, IsPrestataire, IsEmailVerified]
 
     # Cette méthode renvoie l'historique des retraits du prestataire connecté.
     def get(self, request):
@@ -187,8 +188,9 @@ class MesRetraitsView(APIView):
 class MesPaiementsView(APIView):
     """GET/POST /api/wallet/mes-paiements/ : historique + initiation de paiement (client)."""
 
-    # Seul un client connecté peut consulter ou initier un paiement.
-    permission_classes = [IsAuthenticated, IsClient]
+    # Seul un client connecté peut consulter ou initier un paiement ;
+    # l'initiation (POST) exige en plus un e-mail confirmé.
+    permission_classes = [IsAuthenticated, IsClient, IsEmailVerified]
 
     # Cette méthode renvoie l'historique des paiements du client connecté.
     def get(self, request):
