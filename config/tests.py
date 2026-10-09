@@ -72,3 +72,43 @@ class EnvListTests(SimpleTestCase):
     def test_valeur_vide_renvoie_une_liste_vide(self):
         with mock.patch.dict("os.environ", {"CSRF_TRUSTED_ORIGINS": ""}):
             self.assertEqual(env_list("CSRF_TRUSTED_ORIGINS"), [])
+
+
+class MediaPrivesDebugTests(SimpleTestCase):
+    """En DEBUG, Django sert media/ lui-même : jamais les dossiers privés
+    (pièces d'identité, preuves de litige, photos des demandes)."""
+
+    def _resoudre_en_debug(self, chemin):
+        import importlib
+
+        from django.test import override_settings
+        from django.urls import Resolver404, clear_url_caches, resolve
+
+        import config.urls
+
+        try:
+            with override_settings(DEBUG=True):
+                importlib.reload(config.urls)
+                try:
+                    return resolve(chemin, urlconf=config.urls)
+                except Resolver404:
+                    return None
+        finally:
+            # Retour aux URLs réelles des tests (DEBUG=False).
+            importlib.reload(config.urls)
+            clear_url_caches()
+
+    def test_dossiers_prives_jamais_servis(self):
+        for chemin in (
+            "/media/litiges/preuve.jpg",
+            "/media/verification/cni.jpg",
+            "/media/verification/entretiens/video.webm",
+            "/media/demandes/photo.jpg",
+        ):
+            with self.subTest(chemin=chemin):
+                self.assertIsNone(self._resoudre_en_debug(chemin))
+
+    def test_autres_medias_toujours_servis(self):
+        correspondance = self._resoudre_en_debug("/media/profiles/photo.jpg")
+        self.assertIsNotNone(correspondance)
+        self.assertEqual(correspondance.kwargs["path"], "profiles/photo.jpg")

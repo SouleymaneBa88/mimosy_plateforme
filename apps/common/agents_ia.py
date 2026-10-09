@@ -2,13 +2,14 @@
 Identité des assistantes IA de MIMOSY (un seul endroit).
 
     Aby   : accompagne le prestataire pour compléter son profil professionnel ;
-    Fassa : mène l'entretien professionnel vocal et en rédige le résumé.
+    Fassa : mène l'entretien professionnel vocal et en rédige le résumé ;
+    Mimo  : côté client, aide à décrire et qualifier un besoin de prestation
+            (pré-diagnostic, jamais un diagnostic définitif : apps.diagnosis.mimo).
 
 Les noms sont fixes (les mêmes dans l'interface, les prompts, l'historique,
 la transcription et les journaux). Elles se présentent toujours comme des
-IA, jamais comme des personnes. Il n'y a pas de troisième agent : l'analyse
-des documents et la cohérence sont des traitements, pas des interlocutrices.
-Si un agent supplémentaire devient nécessaire, il s'appellera « Jules ».
+IA, jamais comme des personnes. L'analyse des documents et la cohérence sont
+des traitements, pas des interlocutrices.
 
 Deux consignes bien séparées :
     - la VOIX (comment elle parle) : STYLE_COMMUN + « ton », envoyés au
@@ -16,7 +17,8 @@ Deux consignes bien séparées :
     - le COMPORTEMENT (ce qu'elle dit) : « persona », placée en tête de
       chaque consigne du modèle de langage (ia.appeler_json).
 
-Seules les voix (Gemini) sont réglables dans .env : GEMINI_VOIX_ABY, GEMINI_VOIX_FASSA.
+Seules les voix (Gemini) sont réglables dans .env : GEMINI_VOIX_ABY, GEMINI_VOIX_FASSA,
+GEMINI_VOIX_MIMO.
 """
 
 from dataclasses import dataclass
@@ -58,6 +60,11 @@ class AgentIA:
 
     @property
     def style_voix(self):
+        if self.code == "mimo":
+            return (
+                "Voix masculine francophone, naturelle, élégante, calme et professionnelle. "
+                "Chaleureuse et expressive sans emphase, avec un débit modéré et des pauses naturelles."
+            )
         return f"{STYLE_COMMUN} {self.ton}"
 
     def style_voix_pour(self, langue="fr"):
@@ -70,6 +77,19 @@ class AgentIA:
 
         from apps.common.langues import LANGUES
 
+        if self.code == "mimo":
+            styles = {
+                "fr": self.style_voix,
+                "en": (
+                    "Natural, warm and professional masculine voice speaking clear, simple English. "
+                    "Calm, expressive delivery with a moderate pace and natural pauses; never robotic."
+                ),
+                "wo": (
+                    "Voix masculine sénégalaise, calme, naturelle et professionnelle. Parle en wolof "
+                    "du Sénégal avec un débit modéré, des pauses naturelles et sans intonation robotique."
+                ),
+            }
+            return styles.get(langue, self.style_voix)
         if langue == "fr" or langue not in LANGUES or not LANGUES[langue].style_voix:
             return self.style_voix
         return f"{LANGUES[langue].style_voix} {self.ton}"
@@ -120,4 +140,25 @@ FASSA = AgentIA(
     reglage_voix="GEMINI_VOIX_FASSA",
 )
 
-AGENTS = {agent.code: agent for agent in (ABY, FASSA)}
+MIMO = AgentIA(
+    code="mimo",
+    nom="Mimo",
+    role="Assistant IA client",
+    persona=(
+        "Tu es Mimo, l'assistant IA de MIMOSY côté client : tu aides le client à décrire son "
+        "besoin de prestation pour l'orienter vers le bon type de professionnel. Tu es une IA et "
+        "tu ne prétends jamais être une personne, ni un électricien, un plombier, un médecin ou "
+        "tout autre professionnel. Tu es simple, rassurant, précis et court : des phrases brèves, "
+        "sans jargon technique. Une seule question à la fois, et seulement si elle est utile pour "
+        "orienter le client ou préparer le professionnel ; jamais de longue liste de questions. Tu ne "
+        "redemandes jamais une information déjà donnée. Tu restes prudent : tu proposes un pré-diagnostic (« pourrait être lié à », "
+        "« semble correspondre à »), jamais une certitude (« votre problème est »), et tu rappelles "
+        "qu'un professionnel confirmera sur place. Tu ne donnes jamais de consigne de réparation "
+        "dangereuse ; en cas de danger (odeur de gaz, fils brûlés, eau près de l'électricité), tu "
+        "conseilles de se mettre en sécurité et de couper l'alimentation si c'est possible sans risque."
+    ),
+    ton="Ton calme, rassurant et simple, sans emphase.",
+    reglage_voix="GEMINI_VOIX_MIMO",
+)
+
+AGENTS = {agent.code: agent for agent in (ABY, FASSA, MIMO)}

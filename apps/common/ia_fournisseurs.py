@@ -20,6 +20,7 @@ d'environnement) ; elles ne sont jamais journalisées ni renvoyées.
 
 import array
 import base64
+import contextvars
 import io
 import json
 import logging
@@ -44,12 +45,18 @@ class IAErreur(Exception):
         « langue_non_prise_en_charge » (pas de voix serveur dans cette langue).
     reessayer_dans : secondes avant qu'un modèle soit de nouveau utilisable
         (quota ou pause du disjoncteur), ou None si inconnu.
+    cause : nature du dernier échec, pour les journaux et les appelants qui
+        gèrent eux-mêmes un secours (voix) ; jamais renvoyée au navigateur.
+        « quota », « authentification », « acces_refuse », « modele_introuvable »,
+        « requete_invalide », « temporaire », « reponse_invalide », « en_pause »
+        (aucun modèle essayé : tous en pause), ou None (cause inconnue).
     """
 
-    def __init__(self, message="", code="indisponible", reessayer_dans=None):
+    def __init__(self, message="", code="indisponible", reessayer_dans=None, cause=None):
         super().__init__(message)
         self.code = code
         self.reessayer_dans = reessayer_dans
+        self.cause = cause
 
 
 @dataclass
@@ -70,7 +77,8 @@ def fournisseur_actif():
 
 
 def nom_modele(rapide=True):
-    """Modèle principal utilisé (affiché dans les analyses, jamais secret)."""
+    """Modèle principal CONFIGURÉ (premier de la liste), pas forcément celui qui a
+    répondu : pour celui-ci, passer « trace » à generer_json."""
 
     if fournisseur_actif() == "gemini":
         modeles = settings.GEMINI_MODELES_RAPIDES if rapide else settings.GEMINI_MODELES_ANALYSE
@@ -78,18 +86,41 @@ def nom_modele(rapide=True):
     return settings.VERIFICATION_IA_MODELE
 
 
+# Traçabilité : dict « trace » de l'appel generer_json en cours, complété par le
+# code qui connaît le modèle ayant réellement répondu (_essayer_modeles, Claude).
+# Une variable de contexte plutôt qu'un paramètre de plus : les fonctions
+# internes gardent leur signature (elles sont simulées telles quelles par les tests).
+_TRACE = contextvars.ContextVar("ia_trace", default=None)
+
+
+def _tracer_modele(modele):
+    trace = _TRACE.get()
+    if trace is not None and modele:
+        trace["modele"] = modele
+
+
 # ------------------------------------------------------------------ JSON
-def generer_json(consigne, contenu, schema, rapide=True, timeout=None, max_tokens=4000, modele_anthropic=None):
+def generer_json(consigne, contenu, schema, rapide=True, timeout=None, max_tokens=4000, modele_anthropic=None, trace=None):
     """Renvoie le JSON (dict) produit par le modèle, conforme au schéma.
 
     modele_anthropic : modèle Claude propre à l'appelant (sinon VERIFICATION_IA_MODELE).
+    trace : dict facultatif, complété par {"fournisseur": ..., "modele": ...} où
+        « modele » est celui qui a RÉELLEMENT produit la réponse (secours compris).
     """
 
     fournisseur = fournisseur_actif()
-    if fournisseur == "gemini":
-        return _gemini_json(consigne, contenu, schema, rapide, timeout)
-    if fournisseur == "anthropic":
-        return _anthropic_json(consigne, contenu, schema, timeout, max_tokens, modele_anthropic)
+    if trace is not None:
+        trace.pop("modele", None)
+        if fournisseur:
+            trace["fournisseur"] = fournisseur
+    jeton = _TRACE.set(trace)
+    try:
+        if fournisseur == "gemini":
+            return _gemini_json(consigne, contenu, schema, rapide, timeout)
+        if fournisseur == "anthropic":
+            return _anthropic_json(consigne, contenu, schema, timeout, max_tokens, modele_anthropic)
+    finally:
+        _TRACE.reset(jeton)
     raise IAErreur("Aucun fournisseur d'IA configuré.")
 
 
@@ -113,7 +144,10 @@ def _client_gemini(timeout):
 
 # Un modèle dont le quota est épuisé (HTTP 429) est mis en pause le temps
 # indiqué par Google (plafonné) : on n'attend plus son refus à chaque phrase.
-PAUSE_QUOTA_MAX_SECONDES = 3600
+# Le quota quotidien de l'offre gratuite (GenerateRequestsPerDayPerProjectPerModel)
+# annonce souvent plus d'une heure (ex. retryDelay 6012s) : plafonner à 1 h
+# relançait des requêtes vouées à l'échec. Plafond : une journée.
+PAUSE_QUOTA_MAX_SECONDES = 24 * 3600
 
 
 def _cle_pause(modele):
@@ -165,12 +199,98 @@ def ecarter_temporairement(modele, raison, reste_des_modeles):
     logger.warning("Modèle %s écarté %s s après un échec (%s).", modele, secondes, raison)
 
 
-def _essayer_modeles(modeles, appel):
-    """Essaie chaque modèle ; passe au suivant s'il est retiré, saturé, limité ou en échec."""
+# Modèle retiré (404) ou refusé à cette clé (403) : erreur permanente, écartée
+# longtemps au lieu d'être réessayée toutes les 5 minutes.
+PAUSE_MODELE_INUTILISABLE_SECONDES = 3600
+# Réponses vides ou mal formées : souvent liées à UNE requête (une image, une
+# phrase). Le modèle n'est écarté qu'à partir de ce nombre d'échecs dans la fenêtre.
+REPONSES_INVALIDES_AVANT_PAUSE = 3
+FENETRE_REPONSES_INVALIDES_SECONDES = 300
 
-    from google.genai import errors
+
+def classer_erreur(erreur):
+    """Nature d'un échec d'appel (voir IAErreur.cause).
+
+    Google renvoie HTTP 400 (et non 401) pour une clé invalide (« API key not
+    valid », raison API_KEY_INVALID) et 403 pour une clé bloquée : la clé est
+    reconnue au message, avant les autres erreurs 4xx.
+    """
+
+    try:
+        from google.genai import errors
+    except ImportError:
+        errors = None
+    if errors is not None and isinstance(erreur, errors.APIError):
+        code = getattr(erreur, "code", None)
+        texte = f"{getattr(erreur, 'status', '') or ''} {erreur}".lower()
+        if code == 429:
+            return "quota"
+        if code == 401 or (code in (400, 403) and ("api_key" in texte or "api key" in texte)):
+            return "authentification"
+        if code == 403:
+            return "acces_refuse"
+        if code == 404:
+            return "modele_introuvable"
+        if isinstance(code, int) and 400 <= code < 500 and code != 408:
+            return "requete_invalide"
+        return "temporaire"  # 5xx, 408, code inconnu
+    # Réponse reçue mais inexploitable : vide, JSON illisible, audio invraisemblable,
+    # structure inattendue (candidates/parts absents).
+    if isinstance(erreur, (IAErreur, ValueError, KeyError, IndexError, AttributeError, TypeError)):
+        return "reponse_invalide"
+    return "temporaire"  # réseau, délai dépassé
+
+
+def _cle_invalides(modele):
+    return f"ia:invalides:{modele}"
+
+
+def _compter_reponse_invalide(modele):
+    """Compte une réponse inexploitable ; renvoie le total dans la fenêtre courante."""
+
+    cle = _cle_invalides(modele)
+    cache.add(cle, 0, timeout=FENETRE_REPONSES_INVALIDES_SECONDES)
+    try:
+        return cache.incr(cle)
+    except ValueError:  # clé expirée entre add et incr
+        cache.set(cle, 1, timeout=FENETRE_REPONSES_INVALIDES_SECONDES)
+        return 1
+
+
+def ecarter_apres_echec(modele, erreur, reste_des_modeles):
+    """Pour un appelant qui enchaîne lui-même principal et secours (voix) :
+    applique la même règle que _essayer_modeles selon IAErreur.cause.
+
+    temporaire (ou cause inconnue) : disjoncteur ; reponse_invalide : seulement
+    si le seuil est atteint ; quota, modele_introuvable, acces_refuse : pause
+    déjà posée ; requete_invalide, authentification, en_pause : rien.
+    """
+
+    cause = getattr(erreur, "cause", None)
+    if cause in (None, "temporaire"):
+        ecarter_temporairement(modele, str(erreur), reste_des_modeles)
+    elif cause == "reponse_invalide" and (cache.get(_cle_invalides(modele)) or 0) >= REPONSES_INVALIDES_AVANT_PAUSE:
+        ecarter_temporairement(modele, str(erreur), reste_des_modeles)
+
+
+def _essayer_modeles(modeles, appel):
+    """Essaie chaque modèle dans l'ordre ; le traitement d'un échec dépend de sa nature.
+
+        quota (429)                  pause du délai annoncé par Google, modèle suivant
+        authentification             arrêt immédiat : les autres modèles ont la même clé
+        modèle introuvable / refusé  pause longue de CE modèle, modèle suivant
+        requête invalide (4xx)       modèle suivant SANS pause (la demande est en cause)
+        temporaire (5xx, réseau)     disjoncteur (pause courte) s'il reste un suivant
+        réponse inexploitable        modèle suivant ; pause courte au-delà d'un seuil
+    """
+
+    try:
+        from google.genai import errors
+    except ImportError:
+        errors = None
 
     derniere = None
+    cause = None
     # Tous les essais refusés pour quota (HTTP 429) : l'appelant le saura (code « quota »).
     que_des_quotas = bool(modeles)
     for position, modele in enumerate(modeles):
@@ -179,20 +299,42 @@ def _essayer_modeles(modeles, appel):
             continue
         suivants = [m for m in modeles[position + 1:] if not cache.get(_cle_pause(m))]
         try:
-            return appel(modele)
-        except errors.APIError as erreur:
-            derniere = f"{modele} : HTTP {getattr(erreur, 'code', '?')}"
-            if getattr(erreur, "code", None) == 429:
+            resultat = appel(modele)
+        except Exception as erreur:
+            cause = classer_erreur(erreur)
+            if errors is not None and isinstance(erreur, errors.APIError):
+                derniere = f"{modele} : HTTP {getattr(erreur, 'code', '?')}"
+                # Comme avant : le code HTTP seul, jamais le message de l'API dans les journaux.
+                detail = getattr(erreur, "status", "") or ""
+            else:
+                derniere = f"{modele} : {type(erreur).__name__}"
+                detail = str(erreur)[:200]
+            if cause == "quota":
                 _mettre_en_pause(modele, erreur)
                 continue
+            que_des_quotas = False
+            if cause == "authentification":
+                logger.error("Clé du fournisseur d'IA refusée (%s) : vérifier GEMINI_API_KEY.", derniere)
+                raise IAErreur(derniere, cause=cause) from None
+            if cause in ("modele_introuvable", "acces_refuse"):
+                _poser_pause(modele, PAUSE_MODELE_INUTILISABLE_SECONDES)
+                logger.error(
+                    "Modèle %s inutilisable (%s, %s) : écarté %s s, vérifier la liste de modèles.",
+                    modele, derniere, cause, PAUSE_MODELE_INUTILISABLE_SECONDES,
+                )
+            elif cause == "requete_invalide":
+                logger.warning("Requête refusée par %s (%s) : modèle suivant, sans pause.", modele, derniere)
+            elif cause == "reponse_invalide":
+                total = _compter_reponse_invalide(modele)
+                logger.warning("Réponse inexploitable de %s (%s : %s).", modele, derniere, detail)
+                if total >= REPONSES_INVALIDES_AVANT_PAUSE:
+                    ecarter_temporairement(modele, f"{derniere}, {total} réponses inexploitables", suivants)
             else:
-                logger.warning("Modèle Gemini indisponible (%s), essai du suivant.", derniere)
+                logger.warning("Appel Gemini en échec (%s : %s).", derniere, detail)
                 ecarter_temporairement(modele, derniere, suivants)
-        except Exception as erreur:  # réseau, délai dépassé, audio invalide...
-            derniere = f"{modele} : {type(erreur).__name__}"
-            logger.warning("Appel Gemini en échec (%s : %s).", derniere, str(erreur)[:200])
-            ecarter_temporairement(modele, derniere, suivants)
-        que_des_quotas = False
+            continue
+        _tracer_modele(modele)
+        return resultat
     # Délai avant qu'un des modèles redevienne utilisable (le plus court).
     pauses = [_pause_restante(m) for m in modeles]
     reessayer_dans = min(pauses) if pauses and all(pauses) else None
@@ -200,6 +342,7 @@ def _essayer_modeles(modeles, appel):
         derniere or "aucun modèle Gemini configuré",
         code="quota" if que_des_quotas and reessayer_dans else "indisponible",
         reessayer_dans=reessayer_dans,
+        cause=cause or ("en_pause" if modeles else None),
     )
 
 
@@ -264,7 +407,11 @@ def _anthropic_json(consigne, contenu, schema, timeout, max_tokens, modele=None)
     texte = next((bloc.text for bloc in reponse.content if bloc.type == "text"), None)
     if texte is None:
         raise IAErreur("réponse sans texte")
-    return json.loads(texte)
+    resultat = json.loads(texte)
+    # Modèle réellement utilisé : le repli côté serveur (fallbacks) peut en changer.
+    reel = getattr(reponse, "model", None)
+    _tracer_modele(reel if isinstance(reel, str) and reel else modele or settings.VERIFICATION_IA_MODELE)
+    return resultat
 
 
 # ------------------------------------------------------------------ voix
@@ -406,6 +553,13 @@ CONSIGNE_TRANSCRIPTION = (
     "N'ajoute rien, ne résume pas, ne corrige pas le fond. Les noms de lieux et de métiers "
     "sont ceux du Sénégal. Renvoie une chaîne vide si l'enregistrement ne contient pas de parole."
 )
+CONSIGNE_TRANSCRIPTION_AUTO = (
+    "Transcris fidèlement les paroles sans les traduire, résumer ni corriger le fond. "
+    "Détecte la langue réellement parlée parmi le français, l'anglais et le wolof du Sénégal. "
+    "Conserve les changements naturels de langue et les mots de chaque langue tels qu'ils sont dits. "
+    "Les noms de lieux et de métiers sont ceux du Sénégal. Renvoie une chaîne vide sans parole. "
+    "Indique aussi la langue dominante : fr, en ou wo."
+)
 # Transcription dans la langue parlée, SANS traduire (la traduction vient après, à part).
 CONSIGNES_TRANSCRIPTION = {
     "fr": CONSIGNE_TRANSCRIPTION,
@@ -433,6 +587,31 @@ def transcrire(audio, mime, timeout=None, langue="fr"):
     (ASR_WOLOF_URL), sinon le modèle généraliste avec une consigne wolof.
     """
 
+    if langue == "auto":
+        if fournisseur_actif() != "gemini":
+            raise IAErreur("La transcription vocale automatique nécessite Gemini.")
+        resultat = generer_json(
+            CONSIGNE_TRANSCRIPTION_AUTO,
+            [DocumentIA(audio, mime), "Transcription fidèle dans la langue prononcée :"],
+            {
+                "type": "object",
+                "properties": {
+                    "texte": {"type": "string"},
+                    "langue": {"type": "string", "enum": ["fr", "en", "wo"]},
+                },
+                "required": ["texte", "langue"],
+            },
+            rapide=True,
+            timeout=timeout,
+        )
+        if resultat.get("langue") == "wo" and settings.ASR_WOLOF_URL:
+            from apps.common import asr_wolof
+
+            try:
+                return asr_wolof.transcrire(audio, mime)
+            except IAErreur as erreur:
+                logger.warning("Transcription Kiriku indisponible (%s) : transcription multilingue Gemini conservée.", erreur)
+        return (resultat.get("texte") or "").strip()
     if langue == "wo" and settings.ASR_WOLOF_URL:
         from apps.common import asr_wolof
 
@@ -472,3 +651,187 @@ def _transcrire_modele_dedie(audio, mime, timeout):
         return " ".join(t.strip() for t in textes if t and t.strip())
 
     return _essayer_modeles(settings.GEMINI_MODELES_TRANSCRIPTION, appel)
+
+
+# ------------------------------------------------------------------ appel d'outils
+# Utilisé par l'agent MIMO (apps.mimo.agent) : le modèle peut demander à
+# consulter MIMOSY via des outils, puis répondre à partir des résultats réels.
+# La conversation est décrite dans un format neutre, converti ici pour chaque
+# fournisseur : l'agent ne dépend ni de Gemini ni de Claude.
+#
+#   {"role": "client", "contenu": [str | DocumentIA, ...]}
+#   {"role": "modele", "texte": str}                        tour précédent (texte seul)
+#   {"role": "modele", "reponse": ReponseOutils}            tour du modèle à rejouer tel quel
+#   {"role": "resultats", "resultats": [(AppelOutil, dict), ...]}
+
+
+@dataclass
+class OutilIA:
+    """Outil proposé au modèle : nom, description et schéma JSON des arguments."""
+
+    nom: str
+    description: str
+    schema: dict
+
+
+@dataclass
+class AppelOutil:
+    """Demande d'exécution d'un outil formulée par le modèle."""
+
+    id: str
+    nom: str
+    arguments: dict
+
+
+@dataclass
+class ReponseOutils:
+    """Réponse du modèle : du texte et/ou des appels d'outils à exécuter."""
+
+    texte: str
+    appels: list
+    # Contenu natif du fournisseur, rejoué tel quel au tour suivant (signatures
+    # de raisonnement Gemini, blocs tool_use de Claude).
+    brut: object
+    fournisseur: str
+
+
+def generer_avec_outils(consigne, conversation, outils, forcer=None, timeout=None):
+    """Un pas de raisonnement : le modèle répond ou demande des outils.
+
+    forcer : nom d'un outil que le modèle DOIT appeler (sortie structurée finale).
+    Lève IAErreur si aucun fournisseur ne répond.
+    """
+
+    fournisseur = fournisseur_actif()
+    if fournisseur == "gemini":
+        return _gemini_outils(consigne, conversation, outils, forcer, timeout)
+    if fournisseur == "anthropic":
+        return _anthropic_outils(consigne, conversation, outils, forcer, timeout)
+    raise IAErreur("Aucun fournisseur d'IA configuré.")
+
+
+def _json_simple(valeur):
+    """Convertit les structures du SDK (MapComposite, etc.) en JSON Python simple."""
+
+    return json.loads(json.dumps(valeur, ensure_ascii=False, default=str))
+
+
+def _gemini_outils(consigne, conversation, outils, forcer, timeout):
+    client, types = _client_gemini(timeout)
+
+    contenus = []
+    for tour in conversation:
+        if tour["role"] == "client":
+            parties = [
+                types.Part.from_bytes(data=m.donnees, mime_type=m.mime) if isinstance(m, DocumentIA)
+                else types.Part.from_text(text=m)
+                for m in _morceaux(tour["contenu"])
+            ]
+            contenus.append(types.Content(role="user", parts=parties))
+        elif tour["role"] == "modele":
+            reponse = tour.get("reponse")
+            if reponse is not None and reponse.fournisseur == "gemini":
+                contenus.append(reponse.brut)
+            else:
+                texte = reponse.texte if reponse is not None else tour.get("texte", "")
+                contenus.append(types.Content(role="model", parts=[types.Part.from_text(text=texte or "…")]))
+        elif tour["role"] == "resultats":
+            contenus.append(types.Content(role="user", parts=[
+                types.Part(function_response=types.FunctionResponse(
+                    id=appel.id or None, name=appel.nom, response={"resultat": resultat},
+                ))
+                for appel, resultat in tour["resultats"]
+            ]))
+
+    configuration = types.GenerateContentConfig(
+        system_instruction=consigne,
+        tools=[types.Tool(function_declarations=[
+            types.FunctionDeclaration(name=o.nom, description=o.description, parameters_json_schema=o.schema)
+            for o in outils
+        ])],
+        tool_config=types.ToolConfig(function_calling_config=(
+            types.FunctionCallingConfig(mode="ANY", allowed_function_names=[forcer]) if forcer
+            else types.FunctionCallingConfig(mode="AUTO")
+        )),
+        # La boucle est menée par l'agent MIMO : le SDK n'exécute jamais rien lui-même.
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        temperature=0.4,
+    )
+
+    def appel(modele):
+        reponse = client.models.generate_content(model=modele, contents=contenus, config=configuration)
+        candidat = reponse.candidates[0] if reponse.candidates else None
+        if candidat is None or candidat.content is None:
+            raise IAErreur(f"{modele} : réponse vide")
+        appels = [
+            AppelOutil(id=fc.id or "", nom=fc.name, arguments=_json_simple(dict(fc.args or {})))
+            for fc in (reponse.function_calls or [])
+        ]
+        texte = "".join(
+            p.text for p in (candidat.content.parts or [])
+            if getattr(p, "text", None) and not getattr(p, "thought", False)
+        ).strip()
+        if not appels and not texte:
+            raise IAErreur(f"{modele} : réponse vide")
+        return ReponseOutils(texte=texte, appels=appels, brut=candidat.content, fournisseur="gemini")
+
+    modeles = settings.GEMINI_MODELES_RAPIDES
+    return _essayer_modeles(
+        [*modeles, *[m for m in settings.GEMINI_MODELES_ANALYSE if m not in modeles]], appel,
+    )
+
+
+def _anthropic_outils(consigne, conversation, outils, forcer, timeout):
+    import anthropic
+
+    messages = []
+    for tour in conversation:
+        if tour["role"] == "client":
+            blocs = []
+            for morceau in _morceaux(tour["contenu"]):
+                if isinstance(morceau, DocumentIA):
+                    donnees = base64.standard_b64encode(morceau.donnees).decode("ascii")
+                    blocs.append({"type": "image", "source": {"type": "base64", "media_type": morceau.mime, "data": donnees}})
+                else:
+                    blocs.append({"type": "text", "text": morceau})
+            messages.append({"role": "user", "content": blocs})
+        elif tour["role"] == "modele":
+            reponse = tour.get("reponse")
+            if reponse is not None and reponse.fournisseur == "anthropic":
+                messages.append({"role": "assistant", "content": reponse.brut})
+            else:
+                texte = reponse.texte if reponse is not None else tour.get("texte", "")
+                messages.append({"role": "assistant", "content": texte or "…"})
+        elif tour["role"] == "resultats":
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": appel.id, "content": json.dumps(resultat, ensure_ascii=False)}
+                for appel, resultat in tour["resultats"]
+            ]})
+
+    client = anthropic.Anthropic(
+        api_key=settings.ANTHROPIC_API_KEY,
+        timeout=timeout or settings.VERIFICATION_IA_TIMEOUT,
+        max_retries=0,
+    )
+    try:
+        reponse = client.messages.create(
+            model=getattr(settings, "MIMO_MODELE_ANTHROPIC", "") or settings.VERIFICATION_IA_MODELE,
+            max_tokens=2000,
+            system=consigne,
+            messages=messages,
+            tools=[{"name": o.nom, "description": o.description, "input_schema": o.schema} for o in outils],
+            tool_choice={"type": "tool", "name": forcer} if forcer else {"type": "auto"},
+        )
+    except anthropic.APIError as erreur:
+        raise IAErreur(type(erreur).__name__) from None
+    if reponse.stop_reason not in ("end_turn", "tool_use"):
+        raise IAErreur(f"réponse incomplète (stop_reason={reponse.stop_reason})")
+    appels = [
+        AppelOutil(id=bloc.id, nom=bloc.name, arguments=_json_simple(bloc.input or {}))
+        for bloc in reponse.content if bloc.type == "tool_use"
+    ]
+    texte = "".join(bloc.text for bloc in reponse.content if bloc.type == "text").strip()
+    if not appels and not texte:
+        raise IAErreur("réponse vide")
+    brut = [bloc.model_dump(exclude_none=True) for bloc in reponse.content]
+    return ReponseOutils(texte=texte, appels=appels, brut=brut, fournisseur="anthropic")

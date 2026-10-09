@@ -1,0 +1,86 @@
+{
+  "aby_fr": [
+    {
+      "cache": "private, max-age=86400",
+      "corps": null,
+      "statut": 200,
+      "type": "audio/wav"
+    },
+    {
+      "cache": "private, max-age=86400",
+      "corps": null,
+      "statut": 200,
+      "type": "audio/wav"
+    },
+    {
+      "cache": "private, max-age=86400",
+      "corps": null,
+      "statut": 200,
+      "type": "audio/wav"
+    }
+  ],
+  "aby_wo": {
+    "cache": "private, max-age=86400",
+    "corps": null,
+    "statut": 200,
+    "type": "audio/wav"
+  },
+  "index_invalide": {
+    "cache": null,
+    "corps": {
+      "index": "Index invalide."
+    },
+    "statut": 400,
+    "type": "application/json"
+  },
+  "message_du_prestataire": {
+    "cache": null,
+    "corps": {
+      "detail": "Aucune parole de l'assistant à cet index."
+    },
+    "statut": 404,
+    "type": "application/json"
+  },
+  "source_inconnue": {
+    "cache": null,
+    "corps": {
+      "source": "Source inconnue."
+    },
+    "statut": 400,
+    "type": "application/json"
+  },
+  "syntheses": [
+    {
+      "modeles": [
+        "gemini-3.1-flash-tts-preview"
+      ],
+      "oral": "Bonjour, je m'appelle Aby. Je suis l'assistante I.A. de Mimosy. Je vais vous accompagner pour compléter vos premières informations professionnelles. Cela prendra seulement quelques minutes. Vous pouvez me répondre à la voix ou par écrit.",
+      "style": "Voix féminine francophone, naturelle, chaleureuse et professionnelle. Une femme sénégalaise professionnelle qui s'adresse naturellement à une autre personne au Sénégal : français clair, simple et fluide, prononciation naturelle du français parlé au Sénégal, sans accent sénégalais caricatural et sans accent français artificiel. Voix humaine, spontanée et conversationnelle, jamais robotique, théâtrale, commerciale ou exagérément souriante ; pas d'intonation artificielle, pas trop d'emphase sur les mots. Ne donne pas l'impression de lire un texte préparé. Débit modéré et régulier, assez lent pour être parfaitement compris, sans parler au ralenti. Articule clairement chaque mot sans exagérer la prononciation. Respecte la ponctuation : courte pause après une phrase, pause légèrement plus longue après une question, sans longues pauses artificielles. Prononce naturellement les noms de lieux sénégalais (Dakar, Pikine, Guédiawaye, Rufisque, Thiès, Mbour, Touba, Kaolack, Ziguinchor, Saint-Louis). Ton chaleureux, simple et naturel, accueillant sans excès.",
+      "voix": "Sulafat"
+    },
+    {
+      "modeles": [
+        "gemini-3.1-flash-tts-preview"
+      ],
+      "oral": "Quel est votre métier?",
+      "style": "Voix féminine francophone, naturelle, chaleureuse et professionnelle. Une femme sénégalaise professionnelle qui s'adresse naturellement à une autre personne au Sénégal : français clair, simple et fluide, prononciation naturelle du français parlé au Sénégal, sans accent sénégalais caricatural et sans accent français artificiel. Voix humaine, spontanée et conversationnelle, jamais robotique, théâtrale, commerciale ou exagérément souriante ; pas d'intonation artificielle, pas trop d'emphase sur les mots. Ne donne pas l'impression de lire un texte préparé. Débit modéré et régulier, assez lent pour être parfaitement compris, sans parler au ralenti. Articule clairement chaque mot sans exagérer la prononciation. Respecte la ponctuation : courte pause après une phrase, pause légèrement plus longue après une question, sans longues pauses artificielles. Prononce naturellement les noms de lieux sénégalais (Dakar, Pikine, Guédiawaye, Rufisque, Thiès, Mbour, Touba, Kaolack, Ziguinchor, Saint-Louis). Ton chaleureux, simple et naturel, accueillant sans excès.",
+      "voix": "Sulafat"
+    },
+    {
+      "modeles": [
+        "gemini-3.1-flash-tts-preview"
+      ],
+      "oral": "J'ai aussi noté: 12 ans d'expérience. Dans quel domaine exercez-vous?",
+      "style": "Voix féminine francophone, naturelle, chaleureuse et professionnelle. Une femme sénégalaise professionnelle qui s'adresse naturellement à une autre personne au Sénégal : français clair, simple et fluide, prononciation naturelle du français parlé au Sénégal, sans accent sénégalais caricatural et sans accent français artificiel. Voix humaine, spontanée et conversationnelle, jamais robotique, théâtrale, commerciale ou exagérément souriante ; pas d'intonation artificielle, pas trop d'emphase sur les mots. Ne donne pas l'impression de lire un texte préparé. Débit modéré et régulier, assez lent pour être parfaitement compris, sans parler au ralenti. Articule clairement chaque mot sans exagérer la prononciation. Respecte la ponctuation : courte pause après une phrase, pause légèrement plus longue après une question, sans longues pauses artificielles. Prononce naturellement les noms de lieux sénégalais (Dakar, Pikine, Guédiawaye, Rufisque, Thiès, Mbour, Touba, Kaolack, Ziguinchor, Saint-Louis). Ton chaleureux, simple et naturel, accueillant sans excès.",
+      "voix": "Sulafat"
+    },
+    {
+      "modeles": [
+        "gemini-3.1-flash-tts-preview"
+      ],
+      "oral": "Ci ban domaine ngeen di liggéey?",
+      "style": "Voix féminine sénégalaise, naturelle, chaleureuse et posée. Parle en wolof du Sénégal avec la prononciation d'une locutrice native de Dakar. Débit modéré, courte pause après chaque phrase. Ton chaleureux, simple et naturel, accueillant sans excès.",
+      "voix": "Sulafat"
+    }
+  ]
+}

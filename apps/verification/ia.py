@@ -52,14 +52,19 @@ def mode():
     return fournisseur_actif() or "regles"
 
 
-def modele_utilise(rapide=True):
-    return nom_modele(rapide)
+def modele_utilise(rapide=True, trace=None):
+    """Modèle qui a répondu (« trace » d'appeler_json) ; à défaut, le modèle principal configuré."""
+
+    return (trace or {}).get("modele") or nom_modele(rapide)
 
 
-def appeler_json(consigne, contenu, schema, max_tokens=4000, rapide=True, agent=None, langue=None):
+def appeler_json(consigne, contenu, schema, max_tokens=4000, rapide=True, agent=None, langue=None, trace=None):
     """Renvoie le JSON validé par le schéma. « contenu » : texte, ou liste de
     textes et de documents. « agent » : Aby ou Fassa (apps.common.agents_ia)
     quand l'IA s'exprime en leur nom. Lève IAIndisponible si l'IA ne peut pas répondre.
+
+    « trace » : dict facultatif, complété avec le fournisseur et le modèle qui a
+    réellement répondu (voir ia_fournisseurs.generer_json).
 
     « langue » : langue de communication quand le texte produit est DIT au
     prestataire (fr, en, wo) ; la contrainte de langue (apps.common.langues)
@@ -78,7 +83,7 @@ def appeler_json(consigne, contenu, schema, max_tokens=4000, rapide=True, agent=
     else:
         texte = f"{persona}{CONSIGNES_COMMUNES} {CONSIGNE_FRANCAIS_INTERNE}\n\n{consigne}"
     try:
-        return generer_json(texte, contenu, schema, rapide=rapide, max_tokens=max_tokens)
+        return generer_json(texte, contenu, schema, rapide=rapide, max_tokens=max_tokens, trace=trace)
     except (IAErreur, ValueError) as erreur:
         raise IAIndisponible(str(erreur)) from None
 

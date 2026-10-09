@@ -1,0 +1,152 @@
+{
+  "prechauffees": [
+    [
+      "aby",
+      "Bonjour, je m'appelle Aby. Je suis l'assistante IA de MIMOSY. Je vais vous accompagner pour compléter vos premières informations professionnelles. Cela prendra seulement quelques minutes. Vous pouvez me répondre à la voix ou par écrit.",
+      "fr"
+    ],
+    [
+      "aby",
+      "Quel est votre métier ?",
+      "fr"
+    ]
+  ],
+  "reponse": {
+    "corps": {
+      "compte": {
+        "email": "carac-prestataire@test.com",
+        "nom": "Awa Ndiaye",
+        "telephone": "770000095"
+      },
+      "conversation": [
+        {
+          "agent": "aby",
+          "champ": null,
+          "role": "assistant",
+          "texte": "Bonjour, je m'appelle Aby. Je suis l'assistante IA de MIMOSY. Je vais vous accompagner pour compléter vos premières informations professionnelles. Cela prendra seulement quelques minutes. Vous pouvez me répondre à la voix ou par écrit."
+        },
+        {
+          "agent": "aby",
+          "champ": "metier",
+          "role": "assistant",
+          "texte": "Quel est votre métier ?"
+        }
+      ],
+      "langue": {
+        "bcp47": "fr-FR",
+        "code": "fr",
+        "dictee_navigateur": true,
+        "libelle": "Français",
+        "voix_navigateur": true,
+        "voix_serveur": true
+      },
+      "langues": [
+        {
+          "bcp47": "fr-FR",
+          "code": "fr",
+          "dictee_navigateur": true,
+          "libelle": "Français",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        {
+          "bcp47": "en-US",
+          "code": "en",
+          "dictee_navigateur": true,
+          "libelle": "English",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        {
+          "bcp47": "wo-SN",
+          "code": "wo",
+          "dictee_navigateur": false,
+          "libelle": "Wolof (Sénégal)",
+          "voix_navigateur": false,
+          "voix_serveur": false
+        }
+      ],
+      "manquants": [
+        "metier",
+        "domaine",
+        "services",
+        "experience",
+        "zone_intervention",
+        "description"
+      ],
+      "options": {
+        "domaine": [
+          {
+            "id": "<uuid>",
+            "libelle": "Plomberie"
+          },
+          {
+            "id": "<uuid>",
+            "libelle": "Électricité"
+          }
+        ],
+        "services": []
+      },
+      "question": {
+        "champ": "metier",
+        "exemple": "Électricien, plombier, femme de ménage...",
+        "options": [],
+        "pourquoi": "C'est la première chose que les clients verront sur votre profil.",
+        "texte": "Quel est votre métier ?",
+        "type": "texte",
+        "valeur_actuelle": ""
+      },
+      "questions": {
+        "description": {
+          "pourquoi": "Cette présentation apparaîtra sur votre profil public.",
+          "texte": "Décrivez votre activité en quelques phrases.",
+          "type": "texte_long"
+        },
+        "disponibilites": {
+          "exemple": "Du lundi au samedi, de 8 h à 18 h",
+          "pourquoi": "Les clients savent ainsi quand ils peuvent vous solliciter.",
+          "texte": "Quand êtes-vous généralement disponible ?",
+          "type": "texte"
+        },
+        "domaine": {
+          "pourquoi": "Le domaine permet aux clients de vous trouver dans la bonne catégorie.",
+          "texte": "Dans quel domaine exercez-vous ?",
+          "type": "texte_ou_choix"
+        },
+        "experience": {
+          "pourquoi": "Votre expérience rassure les clients ; indiquez 0 si vous débutez.",
+          "texte": "Depuis combien d'années exercez-vous ce métier ?",
+          "type": "nombre"
+        },
+        "metier": {
+          "exemple": "Électricien, plombier, femme de ménage...",
+          "pourquoi": "C'est la première chose que les clients verront sur votre profil.",
+          "texte": "Quel est votre métier ?",
+          "type": "texte"
+        },
+        "services": {
+          "pourquoi": "Vous pourrez fixer vos tarifs pour chacun d'eux une fois votre profil validé.",
+          "texte": "Quels types de travaux réalisez-vous principalement ?",
+          "type": "texte_ou_choix_multiple"
+        },
+        "zone_intervention": {
+          "exemple": "Dakar Plateau, Médina, Parcelles Assainies...",
+          "pourquoi": "MIMOSY vous propose ainsi des demandes proches de chez vous.",
+          "texte": "Dans quelles villes ou quels quartiers intervenez-vous ?",
+          "type": "texte"
+        }
+      },
+      "resume": {
+        "description": "",
+        "disponibilites": "",
+        "domaine": null,
+        "experience": null,
+        "metier": "",
+        "services": [],
+        "zone_intervention": ""
+      },
+      "termine": false
+    },
+    "statut": 200
+  }
+}

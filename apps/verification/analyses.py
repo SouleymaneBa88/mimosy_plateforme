@@ -79,6 +79,8 @@ def analyser_justificatif(dossier):
         "type_declare": DocumentIdentite.TypeDocument(document.type_document).label,
         "analyse_le": timezone.now().isoformat(),
     }
+    # Complété par l'appel IA : modèle qui a réellement lu le document (secours compris).
+    trace = {}
     try:
         with document.fichier.open("rb") as fichier:
             contenu = fichier.read()
@@ -97,8 +99,9 @@ def analyser_justificatif(dossier):
             ],
             SCHEMA_COMPETENCE,
             rapide=False,
+            trace=trace,
         )
-        analyse = {**base, "mode": ia.mode(), "modele": ia.modele_utilise(rapide=False), **resultat}
+        analyse = {**base, "mode": ia.mode(), "modele": ia.modele_utilise(rapide=False, trace=trace), **resultat}
     except ia.IAIndisponible:
         analyse = {**base, **_analyse_justificatif_sans_ia(document, declare)}
     except OSError:
@@ -406,6 +409,7 @@ def analyser_identite(dossier):
         return None
     declare = profil_declare(dossier)
     base = {"document_id": str(cni.id), "analyse_le": timezone.now().isoformat()}
+    trace = {}
     try:
         contenu, mime = _lire_fichier(cni)
         resultat = ia.appeler_json(
@@ -418,8 +422,9 @@ def analyser_identite(dossier):
             [ia.bloc_document(contenu, mime), f"<profil_declare>{declare}</profil_declare>"],
             SCHEMA_IDENTITE,
             rapide=False,
+            trace=trace,
         )
-        analyse = {**base, "mode": ia.mode(), "modele": ia.modele_utilise(rapide=False), **resultat}
+        analyse = {**base, "mode": ia.mode(), "modele": ia.modele_utilise(rapide=False, trace=trace), **resultat}
     except (ia.IAIndisponible, OSError):
         analyse = {**base, "mode": "regles", "observations": "Lecture IA indisponible : seul l'OCR local a été utilisé."}
     dossier.analyse_identite = analyse

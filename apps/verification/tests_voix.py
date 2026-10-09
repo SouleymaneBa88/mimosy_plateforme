@@ -148,6 +148,41 @@ class AudioDeTests(SimpleTestCase):
 
         self.assertEqual(appels, [["tts-principal"], ["tts-secours"]])
 
+    def test_requete_refusee_par_le_principal_secours_sans_mettre_le_principal_en_pause(self):
+        def synthese(oral, nom_voix, style, modeles):
+            if modeles == ["tts-principal"]:
+                raise ia_fournisseurs.IAErreur("refus", cause="requete_invalide")
+            return b"RIFF-secours"
+
+        with mock.patch.object(ia_fournisseurs, "synthese_vocale", side_effect=synthese):
+            self.assertEqual(voix.audio_de(FASSA, "Waaw. Ba kañ la tàmbali?", "wo"), b"RIFF-secours")
+
+        self.assertFalse(cache.get(ia_fournisseurs._cle_pause("tts-principal")))
+
+    def test_panne_temporaire_du_principal_le_met_en_pause(self):
+        def synthese(oral, nom_voix, style, modeles):
+            if modeles == ["tts-principal"]:
+                raise ia_fournisseurs.IAErreur("503", cause="temporaire")
+            return b"RIFF-secours"
+
+        with mock.patch.object(ia_fournisseurs, "synthese_vocale", side_effect=synthese):
+            voix.audio_de(FASSA, "Waaw. Ba kañ la tàmbali?", "wo")
+
+        self.assertTrue(cache.get(ia_fournisseurs._cle_pause("tts-principal")))
+
+    def test_cle_refusee_pas_d_essai_des_modeles_de_secours(self):
+        appels = []
+
+        def synthese(oral, nom_voix, style, modeles):
+            appels.append(modeles)
+            raise ia_fournisseurs.IAErreur("clé", cause="authentification")
+
+        with mock.patch.object(ia_fournisseurs, "synthese_vocale", side_effect=synthese):
+            with self.assertRaises(ia_fournisseurs.IAErreur):
+                voix.audio_de(FASSA, "Waaw. Ba kañ la tàmbali?", "wo")
+
+        self.assertEqual(appels, [["tts-principal"]])
+
     def test_tout_echoue_le_delai_le_plus_court_est_remonte(self):
         def synthese(oral, nom_voix, style, modeles):
             delai = 40 if modeles == ["tts-principal"] else 6

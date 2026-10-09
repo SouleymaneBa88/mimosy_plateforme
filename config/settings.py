@@ -133,6 +133,9 @@ INSTALLED_APPS = [
     'apps.disputes',
     'apps.trust',
     'apps.diagnosis',
+    # Nouveau coeur MIMO (sessions et parcours agent). Il coexiste avec
+    # l'ancien pré-diagnostic apps.diagnosis tant que la migration est validée.
+    'apps.mimo',
     'apps.adminpanel',
     # Couche temps réel : tickets et connexions WebSocket (voir docs/temps-reel.md).
     'apps.realtime',
@@ -180,6 +183,8 @@ REST_FRAMEWORK = {
         "parcours": os.getenv("THROTTLE_RATE_PARCOURS", "60/min"),
         # Voix de l'assistant et transcription (appels audio à l'IA).
         "voix": os.getenv("THROTTLE_RATE_VOIX", "60/min"),
+        # Mimo, l'assistant IA client : chaque message peut solliciter l'IA.
+        "mimo": os.getenv("THROTTLE_RATE_MIMO", "20/min"),
     },
 }
 # Réglages de la documentation automatique de l'API (Swagger, /api/docs/).
@@ -226,6 +231,10 @@ CORS_ALLOWED_ORIGINS = env_list(
     "http://localhost:5173,http://localhost:5174,"
     "http://127.0.0.1:5173,http://127.0.0.1:5174",
 )
+# En-têtes de réponse lisibles par le frontend (origine différente) : sans
+# cela, le navigateur masque Retry-After, et la voix (Mimo, Aby, Fassa)
+# réessayait une phrase alors que le quota du fournisseur était épuisé.
+CORS_EXPOSE_HEADERS = ["Retry-After"]
 
 # L'API elle-même est authentifiée par JWT (jeton dans l'en-tête
 # Authorization), pas par cookie de session : le middleware CSRF ne
@@ -531,6 +540,7 @@ GEMINI_MODELES_VOIX_PAR_LANGUE = {
 # Aby (profil) chaleureuse, Fassa (entretien) douce et précise.
 GEMINI_VOIX_ABY = os.getenv("GEMINI_VOIX_ABY", "Sulafat")
 GEMINI_VOIX_FASSA = os.getenv("GEMINI_VOIX_FASSA", "Vindemiatrix")
+GEMINI_VOIX_MIMO = os.getenv("GEMINI_VOIX_MIMO", "Achird")
 # Durée de conservation d'une phrase déjà synthétisée (économise le quota :
 # l'accueil et les questions fixes ne sont générés qu'une fois).
 VOIX_CACHE_SECONDES = int(os.getenv("VOIX_CACHE_SECONDES", str(30 * 24 * 3600)))
@@ -578,6 +588,24 @@ RECHERCHE_IA_MODELE = os.getenv("RECHERCHE_IA_MODELE", "claude-opus-5")
 RECHERCHE_IA_TIMEOUT = float(os.getenv("RECHERCHE_IA_TIMEOUT", "15"))
 # Durée de conservation des suggestions pour une même requête (secondes).
 RECHERCHE_IA_CACHE_SECONDES = int(os.getenv("RECHERCHE_IA_CACHE_SECONDES", "3600"))
+
+# Mimo, l'assistant IA client (voir apps.diagnosis.mimo) : il qualifie le
+# besoin du client et propose un pré-diagnostic, en ne choisissant que des
+# catégories/services RÉELS du catalogue. Désactivé par défaut comme les
+# autres IA : sans lui, le pré-diagnostic par règles (apps.diagnosis.services)
+# prend le relais et le parcours client fonctionne normalement.
+MIMO_IA_ACTIVE = env_bool("MIMO_IA_ACTIVE", True)
+MIMO_IA_TIMEOUT = float(os.getenv("MIMO_IA_TIMEOUT", "20"))
+# Agent MIMO (apps.mimo.agent) : le modèle consulte MIMOSY via des outils
+# réels avant de répondre. false = ancien parcours (une réponse JSON par
+# tour, apps.diagnosis.mimo), conservé comme repli pendant la migration.
+MIMO_AGENT_ACTIF = env_bool("MIMO_AGENT_ACTIF", True)
+# Nombre maximal d'allers-retours modèle ↔ outils dans un même tour.
+MIMO_AGENT_ETAPES_MAX = int(os.getenv("MIMO_AGENT_ETAPES_MAX", "5"))
+# Modèle Claude de l'agent quand IA_FOURNISSEUR=anthropic (sinon VERIFICATION_IA_MODELE).
+MIMO_MODELE_ANTHROPIC = os.getenv("MIMO_MODELE_ANTHROPIC", "")
+# Taille maximale d'une photo jointe à une demande (apps.prestations.pieces_jointes).
+PIECE_JOINTE_TAILLE_MAX_OCTETS = int(os.getenv("PIECE_JOINTE_TAILLE_MAX_OCTETS", str(5 * 1024 * 1024)))
 
 # Recherche sémantique locale : embeddings, pas IA générative. Désactivée par
 # défaut afin de ne pas télécharger le modèle dans un environnement qui ne
@@ -732,6 +760,9 @@ if len(_sys.argv) > 1 and _sys.argv[1] == "test":
     ANTHROPIC_API_KEY = ""
     IA_FOURNISSEUR = "auto"
     PARCOURS_IA_ACTIVE = False
+    MIMO_IA_ACTIVE = False
+    # Les tests de l'agent l'activent explicitement (apps.mimo.tests_agent).
+    MIMO_AGENT_ACTIF = False
     PARCOURS_LANGUES = ["fr", "en", "wo"]
     VOIX_WOLOF = ""
     ASR_WOLOF_URL = ""

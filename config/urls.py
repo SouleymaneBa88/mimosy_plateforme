@@ -67,16 +67,20 @@ urlpatterns = [
 ]
 
 
+# Dossiers de media/ jamais servis en accès direct, même en développement :
+# pièces d'identité et entretiens (verification/, DocumentIdentiteFichierView),
+# preuves de litige (litiges/, PreuveLitigeFichierView) et photos des demandes
+# (demandes/, PieceJointeFichierView). Ces fichiers passent uniquement par
+# leur vue, qui vérifie que l'utilisateur y a droit.
+DOSSIERS_MEDIA_PRIVES = ("verification/", "litiges/", "demandes/")
+
 if settings.DEBUG:
-    # En développement, Django sert lui-même les fichiers de media/ (photos de
-    # profil, etc.), SAUF les pièces d'identité : media/verification/ n'est
-    # jamais servi en accès direct. Ces images passent uniquement par
-    # DocumentIdentiteFichierView (/api/verification/document/<id>/fichier/),
-    # qui exige d'être le propriétaire ou un admin. En production (DEBUG=False),
-    # le serveur web ne doit pas non plus exposer ce dossier.
+    # En développement, Django sert lui-même les autres fichiers de media/
+    # (photos de profil, etc.). En production (DEBUG=False), le serveur web
+    # ne doit pas non plus exposer les dossiers privés (voir docker/nginx.conf).
     urlpatterns += [
         re_path(
-            rf"^{settings.MEDIA_URL.lstrip('/')}(?!verification/)(?P<path>.*)$",
+            rf"^{settings.MEDIA_URL.lstrip('/')}(?!{'|'.join(DOSSIERS_MEDIA_PRIVES)})(?P<path>.*)$",
             serve,
             {"document_root": settings.MEDIA_ROOT},
         ),

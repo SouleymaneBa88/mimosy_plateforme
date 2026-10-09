@@ -141,11 +141,13 @@ def _synthetiser(agent, oral, style, empreinte, cle, langue="fr"):
     try:
         audio = ia_fournisseurs.synthese_vocale(oral, agent.voix, style, modeles=[principal])
     except ia_fournisseurs.IAErreur as erreur:
-        if not secours:
+        # Clé refusée : les modèles de secours utilisent la même clé.
+        if not secours or erreur.cause == "authentification":
             raise
-        # Principal en échec : écarté quelques minutes, les phrases suivantes vont
+        # Principal en échec : écarté quelques minutes si la panne est temporaire
+        # (même règle que _essayer_modeles), pour que les phrases suivantes aillent
         # directement au secours au lieu de rattendre son délai à chaque fois.
-        ia_fournisseurs.ecarter_temporairement(principal, str(erreur), secours)
+        ia_fournisseurs.ecarter_apres_echec(principal, erreur, secours)
         # Modèle de secours (débit moins régulier, mesuré jusqu'à 158 mots/min) :
         # gardé quelques heures seulement, le modèle principal la refera ensuite.
         try:

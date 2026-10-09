@@ -75,3 +75,60 @@ class DemandePrestation(models.Model):
 	# Vrai si la validation a été faite automatiquement, faute de réponse
 	# du client dans le délai (voir apps.prestations.services).
 	validation_automatique = models.BooleanField(default=False)
+
+
+# Le chemin de stockage d'une pièce jointe : nom non prévisible (UUID), dans
+# media/demandes/, jamais servi en accès direct (voir PieceJointeFichierView).
+def chemin_piece_jointe(instance, filename):
+	extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+	return f"demandes/{uuid.uuid4()}.{extension}"
+
+
+# Ce modèle représente un fichier joint par le client à sa demande de prestation.
+class PieceJointeDemande(models.Model):
+	"""
+	Pièce jointe d'une demande de prestation (photo du problème, envoyée à Mimo).
+
+	Cycle de vie : la pièce est déposée par le client AVANT la demande
+	(pendant la conversation avec Mimo), sans demande liée ; elle est
+	rattachée à la DemandePrestation au moment où le client l'envoie
+	lui-même. Accès (voir apps.prestations.pieces_jointes.peut_consulter) :
+	le client qui l'a déposée, le prestataire de la demande liée, l'admin.
+	"""
+
+	# Les types de pièce jointe : seulement la photo pour l'instant (la vidéo viendra plus tard).
+	class Type(models.TextChoices):
+		PHOTO = "PHOTO", "Photo"
+
+	id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+	# La demande concernée, vide tant que le client ne l'a pas envoyée.
+	demande = models.ForeignKey(
+		DemandePrestation,
+		on_delete=models.CASCADE,
+		related_name="pieces_jointes",
+		null=True,
+		blank=True,
+	)
+	# Le client qui a déposé le fichier.
+	deposee_par = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.CASCADE,
+		related_name="pieces_jointes_demandes",
+	)
+	type = models.CharField(max_length=20, choices=Type.choices, default=Type.PHOTO)
+	fichier = models.FileField(upload_to=chemin_piece_jointe)
+	# Type réel du fichier enregistré (toujours recalculé côté serveur).
+	mime = models.CharField(max_length=100)
+	# Taille en octets du fichier enregistré.
+	taille = models.PositiveIntegerField()
+	# Nom d'origine, nettoyé, seulement pour l'affichage ("photo_prise.jpg").
+	nom_original = models.CharField(max_length=120, blank=True)
+	# Ce que l'IA a vu sur la photo (une seule analyse, réutilisée ensuite).
+	analyse_ia = models.TextField(blank=True)
+	date_ajout = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		ordering = ["date_ajout"]
+
+	def __str__(self):
+		return f"{self.get_type_display()} {self.nom_original or self.id}"

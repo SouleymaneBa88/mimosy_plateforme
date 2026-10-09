@@ -34,6 +34,14 @@ RUN grep -viE '^(nvidia|cuda|triton|torch)([-_=]|$)' requirements.txt > /tmp/req
     && pip install --index-url https://download.pytorch.org/whl/cpu "torch==$(grep -iE '^torch==' requirements.txt | cut -d= -f3)" \
     && pip install -r /tmp/requirements-serveur.txt
 
+# ffmpeg : extraction des images-clés et copie des vidéos envoyées à Mimo
+# (apps.diagnosis.mimo.extraire_images_video). Installé APRÈS les dépendances
+# Python : placé avant, il invalidait la couche pip (torch, ~1,6 Go), retéléchargée
+# à chaque reconstruction.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Utilisateur sans privilèges : le serveur ne tourne jamais en root.
 # Chaque dossier qui reçoit un volume (media, staticfiles, cache des modèles)
 # doit exister ici, au nom de « mimosy » : Docker recopie ce propriétaire dans
