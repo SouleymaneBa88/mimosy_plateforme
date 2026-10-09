@@ -76,6 +76,34 @@ SYNONYMES_METIER = {
 # La longueur minimale d'un préfixe pour être considéré comme significatif.
 LONGUEUR_PREFIXE_MIN = 5
 
+# Mots d'action génériques présents au début de nombreux noms de services
+# ("Installation électrique", "Installation robinet", "Réparation fuite
+# d'eau") : ils ne disent rien du métier. La comparaison de préfixe les
+# ignore et utilise le premier mot distinctif du service, sinon "installer
+# une climatisation" correspondrait à "Installation électrique" alors que
+# ce service n'a rien à voir avec la demande.
+MOTS_ACTION_GENERIQUES = {
+    "installation", "reparation", "entretien", "maintenance", "depannage",
+    "renovation", "pose", "remplacement",
+}
+
+# Mots qui ne portent aucun besoin : formules de politesse, pronoms,
+# articles, verbes de demande. Ils sont ignorés lorsqu'on cherche les mots
+# que l'interprétation n'a pas su rattacher au catalogue (voir
+# mots_non_reconnus).
+MOTS_VIDES = {
+    "je", "tu", "il", "elle", "nous", "vous", "on", "moi", "mon", "ma", "mes", "me",
+    "un", "une", "des", "du", "de", "la", "le", "les", "au", "aux", "et", "ou",
+    "pour", "par", "sur", "dans", "chez", "avec", "en", "qui", "que", "est", "ai",
+    "suis", "veux", "voudrais", "souhaite", "cherche", "recherche", "besoin",
+    "trouver", "faire", "quelqu", "quelquun", "prestataire", "prestataires",
+    "professionnel", "professionnels", "svp", "stp", "plait", "bonjour", "bonsoir",
+    "merci", "aide", "aider", "cette", "ces", "mais", "pas", "tres", "bien",
+    "aujourd", "hui", "aujourdhui", "demain", "maintenant", "urgent", "urgence",
+    "rapidement", "vite", "immediatement", "tout", "suite", "plus", "rayon", "fcfa",
+    "budget", "quartier", "ville", "pres", "proche", "autour",
+}
+
 # Le motif utilisé pour repérer une heure dans le texte.
 _MOTIF_HEURE = re.compile(r"\b(\d{1,2})\s*[hH:]\s*(\d{2})?\b")
 # Le motif utilisé pour repérer un montant en FCFA dans le texte.
@@ -88,6 +116,25 @@ _MOTIF_RAYON = re.compile(r"rayon\s+de\s+(\d+(?:[.,]\d+)?)\s*km", re.IGNORECASE)
 def _normaliser(texte: str) -> str:
     sans_accents = unicodedata.normalize("NFKD", texte).encode("ascii", "ignore").decode("ascii")
     return sans_accents.lower()
+
+
+# Cette fonction découpe un texte déjà normalisé en mots (lettres et chiffres).
+def _mots(texte_normalise: str) -> list[str]:
+    return [mot for mot in re.split(r"[^a-z0-9]+", texte_normalise) if mot]
+
+
+# Cette fonction renvoie le mot qui caractérise vraiment une valeur du catalogue.
+def _mot_distinctif(valeur_normalisee: str) -> str:
+    """
+    "installation electrique" -> "electrique", "plomberie" -> "plomberie".
+    Si la valeur n'est faite que de mots génériques, elle est renvoyée
+    telle quelle (comportement historique).
+    """
+
+    for mot in _mots(valeur_normalisee):
+        if mot not in MOTS_ACTION_GENERIQUES and len(mot) >= LONGUEUR_PREFIXE_MIN:
+            return mot
+    return valeur_normalisee
 
 
 # Cette fonction cherche la meilleure valeur réelle du catalogue présente dans le texte.
@@ -116,12 +163,12 @@ def _premiere_correspondance(texte_normalise: str, valeurs_reelles: list[str]) -
                     return valeur
 
     # Puis une comparaison de préfixe (plombier/plomberie) : chaque mot
-    # du texte est comparé aux premiers caractères de chaque valeur
-    # réelle du catalogue, jamais l'inverse (on ne doit pas laisser un
-    # préfixe court et fréquent matcher n'importe quoi).
+    # du texte est comparé aux premiers caractères du mot distinctif de
+    # chaque valeur réelle du catalogue, jamais l'inverse (on ne doit pas
+    # laisser un préfixe court et fréquent matcher n'importe quoi).
     mots_texte = texte_normalise.split()
     for valeur in candidats:
-        prefixe = _normaliser(valeur)[:LONGUEUR_PREFIXE_MIN]
+        prefixe = _mot_distinctif(_normaliser(valeur))[:LONGUEUR_PREFIXE_MIN]
         # On ignore les préfixes trop courts pour être significatifs.
         if len(prefixe) < LONGUEUR_PREFIXE_MIN:
             continue
@@ -202,3 +249,28 @@ def interpreter_requete(texte: str) -> Interpretation:
         "budget": budget,
         "urgence": urgence,
     }
+
+
+# Cette fonction liste les mots de la requête qui n'ont été rattachés à rien.
+def mots_non_reconnus(texte: str, interpretation: Interpretation) -> list[str]:
+    """
+    Mots porteurs de sens que l'interprétation n'a rattachés à aucune
+    valeur du catalogue ni à une localisation : "installer une
+    climatisation à Dakar" -> ["installer", "climatisation"]. Sert à
+    relancer la recherche textuelle classique (paramètre q) avant de
+    conclure qu'il n'existe aucun résultat. Les nombres (heure, budget,
+    rayon) sont ignorés : ils sont déjà extraits à part.
+    """
+
+    texte_normalise = _normaliser(texte or "")
+
+    # On retire du texte les valeurs réelles déjà reconnues.
+    for champ in ("categorie", "service", "competence", "quartier", "ville"):
+        valeur = interpretation.get(champ)
+        if valeur:
+            texte_normalise = texte_normalise.replace(_normaliser(valeur), " ")
+
+    return [
+        mot for mot in _mots(texte_normalise)
+        if len(mot) >= 3 and mot not in MOTS_VIDES and not any(chiffre.isdigit() for chiffre in mot)
+    ]

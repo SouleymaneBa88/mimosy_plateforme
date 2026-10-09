@@ -1,0 +1,164 @@
+{
+  "demande_de_langue": {
+    "corps": {
+      "action": "question",
+      "langue": {
+        "bcp47": "fr-FR",
+        "code": "fr",
+        "dictee_navigateur": true,
+        "libelle": "Français",
+        "voix_navigateur": true,
+        "voix_serveur": true
+      },
+      "question_numero": 1,
+      "relance": false,
+      "segments": [
+        {
+          "index": 3,
+          "texte": "Très bien, nous continuons en Français."
+        },
+        {
+          "index": 4,
+          "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+        }
+      ],
+      "temps_restant": "<mesure>",
+      "texte": "Très bien, nous continuons en Français. Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+    },
+    "statut": 200
+  },
+  "demarrage": {
+    "corps": {
+      "accueil": "Salaamaalekum. Man laa Fassa, assistante IA bu MIMOSY ngir vérification professionnelle. Dinaa leen laaj ay laaj ci seen expérience ak seen liggéey, ngir waajal seen dossier. Entretien bi du ëpp 5 minit. Mën ngeen tontu ci kàddu, walla ci bind.",
+      "agent": {
+        "code": "fassa",
+        "est_ia": true,
+        "nom": "Fassa",
+        "role": "Assistante IA de vérification professionnelle"
+      },
+      "duree_max_secondes": 300,
+      "id": "<uuid>",
+      "langue": {
+        "bcp47": "wo-SN",
+        "code": "wo",
+        "dictee_navigateur": false,
+        "libelle": "Wolof (Sénégal)",
+        "voix_navigateur": false,
+        "voix_serveur": false
+      },
+      "nombre_questions": 6,
+      "question": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?",
+      "question_numero": 1,
+      "segments": [
+        {
+          "index": 0,
+          "texte": "Salaamaalekum. Man laa Fassa, assistante IA bu MIMOSY ngir vérification professionnelle. Dinaa leen laaj ay laaj ci seen expérience ak seen liggéey, ngir waajal seen dossier. Entretien bi du ëpp 5 minit. Mën ngeen tontu ci kàddu, walla ci bind."
+        },
+        {
+          "index": 1,
+          "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+        }
+      ]
+    },
+    "statut": 201
+  },
+  "entretien": {
+    "echanges": [
+      {
+        "agent": "fassa",
+        "langue": "wo",
+        "question": 0,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Salaamaalekum. Man laa Fassa, assistante IA bu MIMOSY ngir vérification professionnelle. Dinaa leen laaj ay laaj ci seen expérience ak seen liggéey, ngir waajal seen dossier. Entretien bi du ëpp 5 minit. Mën ngeen tontu ci kàddu, walla ci bind.",
+        "texte_fr": "Bonjour. Je suis Fassa, l'assistante IA de vérification professionnelle de MIMOSY. Je vais vous poser quelques questions sur votre expérience et votre activité, afin de préparer votre dossier de vérification. L'entretien dure cinq minutes au maximum. Vous pouvez répondre à la voix, ou par écrit."
+      },
+      {
+        "agent": "fassa",
+        "langue": "fr",
+        "question": 1,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?",
+        "texte_fr": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+      },
+      {
+        "demande_langue": "fr",
+        "mode": "TEXTE",
+        "question": 1,
+        "role": "prestataire",
+        "t": "<mesure>",
+        "texte": "Parle-moi en français"
+      },
+      {
+        "agent": "fassa",
+        "question": 1,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Très bien, nous continuons en Français."
+      },
+      {
+        "agent": "fassa",
+        "question": 1,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+      }
+    ],
+    "langue": "fr",
+    "question_courante": 1,
+    "questions": [
+      {
+        "numero": 1,
+        "objectif": "présentation et ancienneté",
+        "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+      },
+      {
+        "numero": 2,
+        "objectif": "compétences du métier",
+        "texte": "Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?"
+      },
+      {
+        "numero": 3,
+        "objectif": "expérience pratique",
+        "texte": "Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?"
+      },
+      {
+        "numero": 4,
+        "objectif": "mise en situation",
+        "texte": "Un client vous appelle pour « Réparation de fuite ». Quelles sont vos premières vérifications, notamment pour la sécurité ?"
+      },
+      {
+        "numero": 5,
+        "objectif": "clarification du dossier",
+        "texte": "Vous avez fourni un diplôme. Que représente-t-il dans votre parcours ?"
+      },
+      {
+        "numero": 6,
+        "objectif": "zones et disponibilités",
+        "texte": "Dans quelles zones intervenez-vous, et quand êtes-vous généralement disponible ?"
+      }
+    ]
+  },
+  "prechauffees": [
+    [
+      "fassa",
+      "Salaamaalekum. Man laa Fassa, assistante IA bu MIMOSY ngir vérification professionnelle. Dinaa leen laaj ay laaj ci seen expérience ak seen liggéey, ngir waajal seen dossier. Entretien bi du ëpp 5 minit. Mën ngeen tontu ci kàddu, walla ci bind.",
+      "wo"
+    ],
+    [
+      "fassa",
+      "Très bien, nous continuons en Français.",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?",
+      "fr"
+    ]
+  ]
+}

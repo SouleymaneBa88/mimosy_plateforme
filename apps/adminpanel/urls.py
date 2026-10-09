@@ -28,6 +28,7 @@ Routes générées automatiquement par le router :
 Routes déclarées explicitement :
 
     GET  /api/admin/dashboard/
+    GET  /api/admin/dashboard/tendances/?mois=12
     GET  /api/admin/activite/
 """
 
@@ -41,6 +42,7 @@ from .views import (
     ActiviteRecenteView,
     ClientAdminViewSet,
     DashboardStatsView,
+    TendancesView,
     DemandeAdminViewSet,
     DevisAdminViewSet,
     LocalisationAdminViewSet,
@@ -62,6 +64,7 @@ router.register(r"localisations", LocalisationAdminViewSet, basename="admin-loca
 # La liste finale des URLs de cette app.
 urlpatterns = [
     path("dashboard/", DashboardStatsView.as_view(), name="admin-dashboard"),
+    path("dashboard/tendances/", TendancesView.as_view(), name="admin-dashboard-tendances"),
     path("activite/", ActiviteRecenteView.as_view(), name="admin-activite"),
     path("", include(router.urls)),
 ]

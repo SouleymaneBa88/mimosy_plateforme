@@ -14,20 +14,28 @@ jamais tant qu'un litige est en cours sur la demande (voir
 apps.wallet.services.liberer_fonds_pour_prestation).
 """
 
+# logging pour écrire dans les journaux.
 import logging
+# timedelta sert à ajouter une durée (ex. 72 heures) à une date.
 from datetime import timedelta
 
+# Les réglages du projet (délai de validation...).
 from django.conf import settings
+# transaction : opérations "tout ou rien".
 from django.db import transaction
+# timezone.now() donne la date et l'heure actuelles.
 from django.utils import timezone
 
+# Le modèle des notifications.
 from apps.notifications.models import Notification
 
+# Le modèle des demandes de prestation.
 from .models import DemandePrestation
 
 logger = logging.getLogger(__name__)
 
 
+# Erreur levée quand une validation est impossible.
 class ErreurValidation(Exception):
     pass
 
@@ -37,7 +45,9 @@ def litige_en_cours(demande: DemandePrestation) -> bool:
     # Import local : apps.disputes dépend déjà de apps.prestations.
     from apps.disputes.models import Litige
 
+    # Les statuts qui veulent dire "litige terminé".
     termines = (Litige.Statut.RESOLU, Litige.Statut.REJETE, Litige.Statut.REATTRIBUE)
+    # Il y a un litige en cours s'il existe un litige qui n'est pas terminé.
     return Litige.objects.filter(demande_prestation=demande).exclude(statut__in=termines).exists()
 
 
@@ -54,7 +64,9 @@ def valider_prestation(demande: DemandePrestation, automatique: bool = False) ->
 
     from apps.wallet.services import liberer_fonds_pour_prestation
 
+    # Tout ce bloc est "tout ou rien" : en cas d'erreur, rien n'est enregistré.
     with transaction.atomic():
+        # On verrouille la demande en base pendant la validation.
         verrouillee = DemandePrestation.objects.select_for_update().get(pk=demande.pk)
 
         if verrouillee.statut != DemandePrestation.Statut.REALISEE:
@@ -62,6 +74,7 @@ def valider_prestation(demande: DemandePrestation, automatique: bool = False) ->
         if litige_en_cours(verrouillee):
             raise ErreurValidation("Un litige est en cours sur cette prestation : elle ne peut pas être validée.")
 
+        # On passe la demande à TERMINEE et on note la date de validation.
         verrouillee.statut = DemandePrestation.Statut.TERMINEE
         verrouillee.date_validation = timezone.now()
         verrouillee.validation_automatique = automatique
@@ -70,6 +83,7 @@ def valider_prestation(demande: DemandePrestation, automatique: bool = False) ->
         # Sans paiement MIMOSY associé, ne fait rien (voir wallet.services).
         liberer_fonds_pour_prestation(verrouillee)
 
+    # On prévient le prestataire que sa prestation est validée.
     service = verrouillee.service.nom if verrouillee.service_id else "votre prestation"
     Notification.objects.create(
         utilisateur=verrouillee.prestataire.user,
@@ -81,6 +95,7 @@ def valider_prestation(demande: DemandePrestation, automatique: bool = False) ->
         ) + " Le montant payé est maintenant disponible dans votre wallet, commission MIMOSY déduite.",
         type=Notification.Type.REPONSE_PRESTATION,
     )
+    # Si la validation est automatique, on prévient aussi le client.
     if automatique:
         Notification.objects.create(
             utilisateur=verrouillee.client,
@@ -89,14 +104,17 @@ def valider_prestation(demande: DemandePrestation, automatique: bool = False) ->
             type=Notification.Type.REPONSE_PRESTATION,
         )
 
+    # On recharge l'objet depuis la base pour renvoyer son état à jour.
     demande.refresh_from_db()
     return demande
 
 
 # Cette fonction indique si le délai de validation client d'une demande réalisée est écoulé.
 def delai_validation_depasse(demande: DemandePrestation) -> bool:
+    # Seules les demandes REALISEE avec une date de réalisation sont concernées.
     if demande.statut != DemandePrestation.Statut.REALISEE or demande.date_realisation is None:
         return False
+    # Date limite = date de réalisation + délai autorisé.
     limite = demande.date_realisation + timedelta(hours=settings.PRESTATION_DELAI_VALIDATION_HEURES)
     return timezone.now() >= limite
 
@@ -116,10 +134,12 @@ def valider_si_delai_depasse(demande: DemandePrestation) -> bool:
 
 # Cette fonction valide automatiquement toutes les demandes dont le délai est dépassé.
 def valider_prestations_expirees() -> int:
+    # Toute demande réalisée avant cette date a dépassé le délai.
     limite = timezone.now() - timedelta(hours=settings.PRESTATION_DELAI_VALIDATION_HEURES)
     demandes = DemandePrestation.objects.filter(
         statut=DemandePrestation.Statut.REALISEE,
         date_realisation__lte=limite,
     ).select_related("service", "prestataire__user", "client")
 
+    # On compte combien de demandes ont vraiment été validées.
     return sum(1 for demande in demandes if valider_si_delai_depasse(demande))

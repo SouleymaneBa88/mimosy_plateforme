@@ -1,0 +1,280 @@
+{
+  "entretien": {
+    "echanges": [
+      {
+        "agent": "fassa",
+        "question": 0,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Bonjour. Je suis Fassa, l'assistante IA de vérification professionnelle de MIMOSY. Je vais vous poser quelques questions sur votre expérience et votre activité, afin de préparer votre dossier de vérification. L'entretien dure cinq minutes au maximum. Vous pouvez répondre à la voix, ou par écrit."
+      },
+      {
+        "agent": "fassa",
+        "question": 1,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+      },
+      {
+        "duree": "<mesure>",
+        "mode": "VOIX",
+        "question": 1,
+        "role": "prestataire",
+        "t": "<mesure>",
+        "texte": "Oui."
+      },
+      {
+        "agent": "fassa",
+        "question": 1,
+        "relance": true,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Depuis combien d'années environ ?"
+      },
+      {
+        "duree": "<mesure>",
+        "mode": "TEXTE",
+        "question": 1,
+        "role": "prestataire",
+        "t": "<mesure>",
+        "texte": "Je suis plombier depuis dix ans à Dakar, je répare les fuites et j'installe des sanitaires."
+      },
+      {
+        "agent": "fassa",
+        "question": 2,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "D'accord, c'est noté."
+      },
+      {
+        "agent": "fassa",
+        "question": 2,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?"
+      },
+      {
+        "duree": "<mesure>",
+        "mode": "VOIX",
+        "question": 2,
+        "role": "prestataire",
+        "t": "<mesure>",
+        "texte": "Je maîtrise le soudage du cuivre, le PVC et la recherche de fuites avec un manomètre."
+      },
+      {
+        "agent": "fassa",
+        "question": 3,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Merci."
+      },
+      {
+        "agent": "fassa",
+        "question": 3,
+        "relance": false,
+        "role": "ia",
+        "t": "<mesure>",
+        "texte": "Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?"
+      }
+    ],
+    "langue": "fr",
+    "mode": "regles",
+    "question_courante": 3,
+    "questions": [
+      {
+        "numero": 1,
+        "objectif": "présentation et ancienneté",
+        "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+      },
+      {
+        "numero": 2,
+        "objectif": "compétences du métier",
+        "texte": "Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?"
+      },
+      {
+        "numero": 3,
+        "objectif": "expérience pratique",
+        "texte": "Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?"
+      },
+      {
+        "numero": 4,
+        "objectif": "mise en situation",
+        "texte": "Un client vous appelle pour « Réparation de fuite ». Quelles sont vos premières vérifications, notamment pour la sécurité ?"
+      },
+      {
+        "numero": 5,
+        "objectif": "clarification du dossier",
+        "texte": "Vous avez fourni un diplôme. Que représente-t-il dans votre parcours ?"
+      },
+      {
+        "numero": 6,
+        "objectif": "zones et disponibilités",
+        "texte": "Dans quelles zones intervenez-vous, et quand êtes-vous généralement disponible ?"
+      }
+    ],
+    "relances_question_courante": 0,
+    "statut": "EN_COURS"
+  },
+  "etapes": {
+    "commencer": {
+      "corps": {
+        "temps_restant": "<mesure>"
+      },
+      "statut": 200
+    },
+    "demarrage": {
+      "corps": {
+        "accueil": "Bonjour. Je suis Fassa, l'assistante IA de vérification professionnelle de MIMOSY. Je vais vous poser quelques questions sur votre expérience et votre activité, afin de préparer votre dossier de vérification. L'entretien dure cinq minutes au maximum. Vous pouvez répondre à la voix, ou par écrit.",
+        "agent": {
+          "code": "fassa",
+          "est_ia": true,
+          "nom": "Fassa",
+          "role": "Assistante IA de vérification professionnelle"
+        },
+        "duree_max_secondes": 300,
+        "id": "<uuid>",
+        "langue": {
+          "bcp47": "fr-FR",
+          "code": "fr",
+          "dictee_navigateur": true,
+          "libelle": "Français",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        "nombre_questions": 6,
+        "question": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?",
+        "question_numero": 1,
+        "segments": [
+          {
+            "index": 0,
+            "texte": "Bonjour. Je suis Fassa, l'assistante IA de vérification professionnelle de MIMOSY. Je vais vous poser quelques questions sur votre expérience et votre activité, afin de préparer votre dossier de vérification. L'entretien dure cinq minutes au maximum. Vous pouvez répondre à la voix, ou par écrit."
+          },
+          {
+            "index": 1,
+            "texte": "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?"
+          }
+        ]
+      },
+      "statut": 201
+    },
+    "mauvaise_question": {
+      "corps": {
+        "detail": "Cette réponse ne correspond pas à la question en cours."
+      },
+      "statut": 400
+    },
+    "question_2": {
+      "corps": {
+        "action": "question",
+        "question_numero": 3,
+        "relance": false,
+        "segments": [
+          {
+            "index": 8,
+            "texte": "Merci."
+          },
+          {
+            "index": 9,
+            "texte": "Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?"
+          }
+        ],
+        "temps_restant": "<mesure>",
+        "texte": "Merci. Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?"
+      },
+      "statut": 200
+    },
+    "reponse_detaillee": {
+      "corps": {
+        "action": "question",
+        "question_numero": 2,
+        "relance": false,
+        "segments": [
+          {
+            "index": 5,
+            "texte": "D'accord, c'est noté."
+          },
+          {
+            "index": 6,
+            "texte": "Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?"
+          }
+        ],
+        "temps_restant": "<mesure>",
+        "texte": "D'accord, c'est noté. Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?"
+      },
+      "statut": 200
+    },
+    "reponse_vague": {
+      "corps": {
+        "action": "relance",
+        "question_numero": 1,
+        "relance": true,
+        "segments": [
+          {
+            "index": 3,
+            "texte": "Depuis combien d'années environ ?"
+          }
+        ],
+        "temps_restant": "<mesure>",
+        "texte": "Depuis combien d'années environ ?"
+      },
+      "statut": 200
+    }
+  },
+  "prechauffees": [
+    [
+      "fassa",
+      "Bonjour. Je suis Fassa, l'assistante IA de vérification professionnelle de MIMOSY. Je vais vous poser quelques questions sur votre expérience et votre activité, afin de préparer votre dossier de vérification. L'entretien dure cinq minutes au maximum. Vous pouvez répondre à la voix, ou par écrit.",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Pouvez-vous me présenter votre activité de plombier, et depuis combien de temps vous exercez ?",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Depuis combien d'années environ ?",
+      "fr"
+    ],
+    [
+      "fassa",
+      "D'accord, c'est noté.",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Quelles sont vos principales compétences en plomberie, et avec quels outils travaillez-vous ?",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Merci.",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Vous proposez « Installation sanitaire ». Racontez-moi une intervention récente de ce type : qu'avez-vous fait ?",
+      "fr"
+    ],
+    [
+      "fassa",
+      "Un client vous appelle pour « Réparation de fuite ». Quelles sont vos premières vérifications, notamment pour la sécurité ?",
+      "fr"
+    ]
+  ]
+}

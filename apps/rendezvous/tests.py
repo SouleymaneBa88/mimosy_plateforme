@@ -1,3 +1,5 @@
+# Tests des disponibilités et des rendez-vous : création, créneaux libres,
+# chevauchements, droits d'accès et changements de statut.
 from datetime import date, time, timedelta
 
 from django.urls import reverse
@@ -24,8 +26,10 @@ def prochain_jour_semaine(jour_semaine):
 class RendezVousTestCase(APITestCase):
     """Base commune : un client, un prestataire vérifié avec un service et une disponibilité."""
 
+    # Avant chaque test : on crée un client, un prestataire vérifié, un service et une disponibilité.
     def setUp(self):
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_client",
             email="rdv-client@test.com",
             password="TestPassword123!",
@@ -36,6 +40,7 @@ class RendezVousTestCase(APITestCase):
         )
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_prestataire",
             email="rdv-prestataire@test.com",
             password="TestPassword123!",
@@ -77,20 +82,25 @@ class RendezVousTestCase(APITestCase):
 
         self.lundi_prochain = prochain_jour_semaine(Disponibilite.JourSemaine.LUNDI)
 
+    # Petite fonction : construit un créneau (début, fin) pour une date donnée.
     def creneau(self, heure_debut, heure_fin, jour=None):
         jour = jour or self.lundi_prochain
         debut = timezone.make_aware(timezone.datetime.combine(jour, heure_debut))
         fin = timezone.make_aware(timezone.datetime.combine(jour, heure_fin))
         return debut, fin
 
+    # Connecte le client de test.
     def authenticate_client(self):
         self.client.force_authenticate(user=self.client_user)
 
+    # Connecte le prestataire de test.
     def authenticate_prestataire(self):
         self.client.force_authenticate(user=self.prestataire_user)
 
 
+# Tests des disponibilités du prestataire.
 class DisponibiliteAPITests(RendezVousTestCase):
+    # Vérifie qu'un prestataire peut créer une disponibilité.
     def test_prestataire_peut_creer_une_disponibilite(self):
         self.authenticate_prestataire()
 
@@ -103,6 +113,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(str(response.data["prestataire"]), str(self.profil.id))
 
+    # Vérifie qu'un prestataire voit ses disponibilités.
     def test_prestataire_voit_ses_disponibilites(self):
         self.authenticate_prestataire()
 
@@ -111,6 +122,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie que les disponibilités publiques sont visibles sans être connecté.
     def test_disponibilites_publiques_visibles_sans_authentification(self):
         response = self.client.get(
             reverse("prestataire-disponibilites", kwargs={"prestataire_id": self.profil.id})
@@ -119,6 +131,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie qu'un prestataire peut modifier sa disponibilité.
     def test_prestataire_peut_modifier_sa_disponibilite(self):
         self.authenticate_prestataire()
 
@@ -132,6 +145,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
         self.disponibilite.refresh_from_db()
         self.assertEqual(self.disponibilite.heure_fin, time(13, 0))
 
+    # Vérifie qu'un prestataire peut supprimer sa disponibilité.
     def test_prestataire_peut_supprimer_sa_disponibilite(self):
         self.authenticate_prestataire()
 
@@ -142,8 +156,10 @@ class DisponibiliteAPITests(RendezVousTestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Disponibilite.objects.filter(pk=self.disponibilite.id).exists())
 
+    # Vérifie qu'un autre prestataire ne peut pas modifier cette disponibilité.
     def test_autre_prestataire_ne_peut_pas_modifier_la_disponibilite(self):
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_autre_prestataire",
             email="rdv-autre-prestataire@test.com",
             password="TestPassword123!",
@@ -166,6 +182,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Vérifie qu'un client ne peut pas créer de disponibilité.
     def test_client_ne_peut_pas_creer_de_disponibilite(self):
         self.authenticate_client()
 
@@ -177,6 +194,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie qu'une heure de fin avant l'heure de début est refusée.
     def test_heure_fin_avant_heure_debut_refusee(self):
         self.authenticate_prestataire()
 
@@ -188,6 +206,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'une heure de fin égale à l'heure de début est refusée.
     def test_heure_fin_egale_heure_debut_refusee(self):
         self.authenticate_prestataire()
 
@@ -199,6 +218,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie que deux disponibilités qui se chevauchent sont refusées.
     def test_chevauchement_refuse(self):
         self.authenticate_prestataire()
 
@@ -211,6 +231,7 @@ class DisponibiliteAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'une disponibilité inactive n'est pas affichée au public.
     def test_disponibilite_inactive_non_listee_publiquement(self):
         self.disponibilite.actif = False
         self.disponibilite.save(update_fields=["actif"])
@@ -223,7 +244,9 @@ class DisponibiliteAPITests(RendezVousTestCase):
         self.assertEqual(len(response.data), 0)
 
 
+# Tests du calcul des créneaux libres.
 class CreneauxDisponiblesAPITests(RendezVousTestCase):
+    # Vérifie les créneaux libres quand il n'y a aucun rendez-vous.
     def test_creneaux_disponibles_sans_rendez_vous(self):
         response = self.client.get(
             reverse("prestataire-creneaux-disponibles", kwargs={"prestataire_id": self.profil.id}),
@@ -233,6 +256,7 @@ class CreneauxDisponiblesAPITests(RendezVousTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie qu'un rendez-vous existant retire son créneau des créneaux libres.
     def test_creneaux_disponibles_soustrait_un_rendez_vous_existant(self):
         debut, fin = self.creneau(time(10, 0), time(11, 0))
         RendezVous.objects.create(
@@ -252,6 +276,7 @@ class CreneauxDisponiblesAPITests(RendezVousTestCase):
         # 09:00-10:00 et 11:00-12:00 : deux plages libres autour du rendez-vous.
         self.assertEqual(len(response.data), 2)
 
+    # Vérifie qu'oublier la date renvoie une erreur 400.
     def test_date_manquante_renvoie_400(self):
         response = self.client.get(
             reverse("prestataire-creneaux-disponibles", kwargs={"prestataire_id": self.profil.id})
@@ -259,6 +284,7 @@ class CreneauxDisponiblesAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un prestataire inexistant renvoie une erreur 404.
     def test_prestataire_inexistant_renvoie_404(self):
         response = self.client.get(
             reverse("prestataire-creneaux-disponibles", kwargs={"prestataire_id": "00000000-0000-0000-0000-000000000000"}),
@@ -268,7 +294,9 @@ class CreneauxDisponiblesAPITests(RendezVousTestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
+# Tests de la création des rendez-vous.
 class RendezVousAPITests(RendezVousTestCase):
+    # Vérifie qu'un client peut prendre rendez-vous dans une disponibilité.
     def test_client_peut_creer_un_rendez_vous_dans_une_disponibilite(self):
         self.authenticate_client()
         debut, fin = self.creneau(time(10, 0), time(11, 0))
@@ -289,6 +317,7 @@ class RendezVousAPITests(RendezVousTestCase):
         self.assertIn("id", response.data)
         self.assertEqual(response.data["statut"], RendezVous.Statut.EN_ATTENTE)
 
+    # Vérifie que le prestataire reçoit une notification à la création.
     def test_notification_creee_au_prestataire_a_la_creation(self):
         from apps.notifications.models import Notification
 
@@ -314,6 +343,7 @@ class RendezVousAPITests(RendezVousTestCase):
             ).exists()
         )
 
+    # Vérifie qu'un créneau en dehors des disponibilités est refusé.
     def test_creneau_hors_disponibilite_refuse(self):
         self.authenticate_client()
         # Mardi n'a aucune disponibilité configurée.
@@ -333,6 +363,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un créneau qui dépasse la disponibilité est refusé.
     def test_creneau_deborde_la_disponibilite_refuse(self):
         self.authenticate_client()
         # Disponibilité 09:00-12:00, demande 11:30-13:00 : déborde.
@@ -351,6 +382,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un créneau déjà réservé est refusé.
     def test_creneau_deja_reserve_refuse(self):
         self.authenticate_client()
         debut, fin = self.creneau(time(10, 0), time(11, 0))
@@ -376,6 +408,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un client ne peut pas réserver deux créneaux en même temps.
     def test_client_ne_peut_pas_reserver_deux_creneaux_en_meme_temps(self):
         self.authenticate_client()
         debut, fin = self.creneau(time(9, 0), time(10, 0))
@@ -389,6 +422,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         # Un deuxième prestataire, disponible au même moment.
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_prestataire_2",
             email="rdv-prestataire-2@test.com",
             password="TestPassword123!",
@@ -424,6 +458,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un service non proposé par ce prestataire est refusé.
     def test_service_non_propose_par_le_prestataire_refuse(self):
         self.authenticate_client()
         autre_service = Service.objects.create(categorie=self.categorie, nom="Coloration", description="")
@@ -442,6 +477,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un prestataire inexistant est refusé.
     def test_prestataire_inexistant_refuse(self):
         self.authenticate_client()
         debut, fin = self.creneau(time(10, 0), time(11, 0))
@@ -459,6 +495,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'une date passée est refusée.
     def test_date_passee_refusee(self):
         self.authenticate_client()
         hier = timezone.now() - timedelta(days=1)
@@ -476,6 +513,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un visiteur non connecté ne peut pas prendre rendez-vous.
     def test_utilisateur_non_authentifie_ne_peut_pas_creer(self):
         debut, fin = self.creneau(time(10, 0), time(11, 0))
 
@@ -492,6 +530,7 @@ class RendezVousAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    # Vérifie qu'un prestataire ne peut pas prendre rendez-vous.
     def test_prestataire_ne_peut_pas_creer_de_rendez_vous(self):
         self.authenticate_prestataire()
         debut, fin = self.creneau(time(10, 0), time(11, 0))
@@ -524,6 +563,7 @@ class RendezVousConcurrenceAPITests(RendezVousTestCase):
     qui est le comportement qui protège réellement contre la course.
     """
 
+    # Vérifie le refus si un autre client prend le créneau juste avant l'enregistrement.
     def test_creation_refusee_si_le_creneau_est_pris_juste_avant_l_ecriture(self):
         debut, fin = self.creneau(time(10, 0), time(11, 0))
 
@@ -571,6 +611,8 @@ class RendezVousConcurrenceAPITests(RendezVousTestCase):
         debut, fin = self.creneau(time(10, 0), time(11, 0))
         validate_original = RendezVousCreateSerializer.validate
 
+        # Remplace la validation : après avoir validé, on crée "en cachette" un rendez-vous
+        # concurrent sur le même créneau, pour simuler deux clients au même moment.
         def validate_puis_creer_le_concurrent(self, attrs):
             resultat = validate_original(self, attrs)
             RendezVous.objects.create(
@@ -604,9 +646,11 @@ class RendezVousConcurrenceAPITests(RendezVousTestCase):
             1,
         )
 
+    # Crée un second client (le "concurrent").
     @staticmethod
     def _autre_client():
         return User.objects.create_user(
+            email_verified=True,
             username="rdv_client_concurrent",
             email="rdv-client-concurrent@test.com",
             password="TestPassword123!",
@@ -617,7 +661,9 @@ class RendezVousConcurrenceAPITests(RendezVousTestCase):
         )
 
 
+# Tests du cycle de vie d'un rendez-vous (confirmer, refuser, annuler, terminer).
 class RendezVousWorkflowAPITests(RendezVousTestCase):
+    # Avant chaque test : on crée un rendez-vous en attente.
     def setUp(self):
         super().setUp()
         debut, fin = self.creneau(time(10, 0), time(11, 0))
@@ -629,20 +675,24 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
             date_heure_fin=fin,
         )
 
+    # Vérifie que le client voit son rendez-vous.
     def test_client_voit_son_rendez_vous(self):
         self.authenticate_client()
         response = self.client.get(reverse("rendez-vous-list"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie que le prestataire voit le rendez-vous reçu.
     def test_prestataire_voit_le_rendez_vous_recu(self):
         self.authenticate_prestataire()
         response = self.client.get(reverse("rendez-vous-list"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie qu'un autre client ne voit pas ce rendez-vous.
     def test_autre_client_ne_voit_pas_le_rendez_vous(self):
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="rdv_autre_client",
             email="rdv-autre-client@test.com",
             password="TestPassword123!",
@@ -657,8 +707,10 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Vérifie qu'un autre prestataire ne voit pas ce rendez-vous.
     def test_autre_prestataire_ne_voit_pas_le_rendez_vous(self):
         autre_prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="rdv_prestataire_3",
             email="rdv-prestataire-3@test.com",
             password="TestPassword123!",
@@ -677,6 +729,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Vérifie que le prestataire peut confirmer.
     def test_prestataire_peut_confirmer(self):
         self.authenticate_prestataire()
         url = reverse("rendez-vous-confirmer", kwargs={"pk": self.rendez_vous.id})
@@ -686,12 +739,14 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         self.rendez_vous.refresh_from_db()
         self.assertEqual(self.rendez_vous.statut, RendezVous.Statut.CONFIRME)
 
+    # Vérifie que le client ne peut pas confirmer.
     def test_client_ne_peut_pas_confirmer(self):
         self.authenticate_client()
         url = reverse("rendez-vous-confirmer", kwargs={"pk": self.rendez_vous.id})
         response = self.client.post(url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que le prestataire peut refuser.
     def test_prestataire_peut_refuser(self):
         self.authenticate_prestataire()
         url = reverse("rendez-vous-refuser", kwargs={"pk": self.rendez_vous.id})
@@ -701,6 +756,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         self.rendez_vous.refresh_from_db()
         self.assertEqual(self.rendez_vous.statut, RendezVous.Statut.REFUSE)
 
+    # Vérifie que le client peut annuler un rendez-vous en attente.
     def test_client_peut_annuler_en_attente(self):
         self.authenticate_client()
         url = reverse("rendez-vous-annuler", kwargs={"pk": self.rendez_vous.id})
@@ -710,6 +766,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         self.rendez_vous.refresh_from_db()
         self.assertEqual(self.rendez_vous.statut, RendezVous.Statut.ANNULE)
 
+    # Vérifie que le prestataire peut annuler un rendez-vous confirmé.
     def test_prestataire_peut_annuler_un_rendez_vous_confirme(self):
         self.rendez_vous.statut = RendezVous.Statut.CONFIRME
         self.rendez_vous.save(update_fields=["statut"])
@@ -722,6 +779,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         self.rendez_vous.refresh_from_db()
         self.assertEqual(self.rendez_vous.statut, RendezVous.Statut.ANNULE)
 
+    # Vérifie que le prestataire peut terminer un rendez-vous confirmé.
     def test_prestataire_peut_terminer_un_rendez_vous_confirme(self):
         self.rendez_vous.statut = RendezVous.Statut.CONFIRME
         self.rendez_vous.save(update_fields=["statut"])
@@ -734,6 +792,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         self.rendez_vous.refresh_from_db()
         self.assertEqual(self.rendez_vous.statut, RendezVous.Statut.TERMINE)
 
+    # Vérifie qu'on ne peut pas terminer un rendez-vous encore en attente.
     def test_impossible_de_terminer_un_rendez_vous_en_attente(self):
         self.authenticate_prestataire()
         url = reverse("rendez-vous-terminer", kwargs={"pk": self.rendez_vous.id})
@@ -741,6 +800,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un rendez-vous terminé ne peut pas revenir "en attente".
     def test_transition_terminee_vers_en_attente_impossible(self):
         self.rendez_vous.statut = RendezVous.Statut.TERMINE
         self.rendez_vous.save(update_fields=["statut"])
@@ -753,8 +813,10 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         self.rendez_vous.refresh_from_db()
         self.assertEqual(self.rendez_vous.statut, RendezVous.Statut.TERMINE)
 
+    # Vérifie qu'un autre client ne peut pas annuler ce rendez-vous.
     def test_autre_client_ne_peut_pas_annuler(self):
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="rdv_autre_client_2",
             email="rdv-autre-client-2@test.com",
             password="TestPassword123!",
@@ -769,6 +831,7 @@ class RendezVousWorkflowAPITests(RendezVousTestCase):
         response = self.client.post(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Vérifie que le client reçoit une notification à la confirmation.
     def test_notification_creee_a_la_confirmation(self):
         from apps.notifications.models import Notification
 

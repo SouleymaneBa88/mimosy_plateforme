@@ -4,7 +4,15 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 # On importe toutes les vues à relier aux URLs.
-from .views import LoginView, LogoutView, ProfilePhotoView, ProfileView, RegisterView
+from .views import (
+    LoginView,
+    LogoutView,
+    ProfilePhotoView,
+    ProfileView,
+    RegisterView,
+    ResendVerificationEmailView,
+    VerifyEmailView,
+)
 
 
 # La liste des URLs de l'application "accounts".
@@ -14,6 +22,18 @@ urlpatterns = [
         "register/",
         RegisterView.as_view(),
         name="register"
+    ),
+    # Confirmer son adresse e-mail avec le jeton reçu par e-mail.
+    path(
+        "verify-email/",
+        VerifyEmailView.as_view(),
+        name="verify-email",
+    ),
+    # Redemander un lien de confirmation d'adresse e-mail.
+    path(
+        "resend-verification-email/",
+        ResendVerificationEmailView.as_view(),
+        name="resend-verification-email",
     ),
     # Se connecter et recevoir les jetons JWT.
     path(

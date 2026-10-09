@@ -10,6 +10,16 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+# ------------------------------------------------------------------
+# En français simple :
+# Ce fichier contient TOUS les réglages du backend MIMOSY :
+# base de données, sécurité, applications installées, JWT,
+# temps réel, paiement PayDunya, IA, etc.
+#
+# La plupart des valeurs sont lues dans les "variables d'environnement"
+# (fichier .env ou .env.docker). Ainsi, on ne met jamais de mot de passe
+# ou de clé secrète directement dans le code.
+# ------------------------------------------------------------------
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -17,8 +27,11 @@ from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 import os
 
+# Charge le fichier .env (s'il existe) dans les variables d'environnement.
 load_dotenv()
 
+# BASE_DIR = le dossier back_Mimosy/. On s'en sert pour construire les
+# chemins (media, fichiers statiques...).
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -57,8 +70,11 @@ def env_list(nom_variable, valeur_defaut=""):
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: don't run with debug turned on in production!
+# DEBUG=True : mode développement (messages d'erreur détaillés).
+# En production, il faut absolument DEBUG=False.
 DEBUG = env_bool("DEBUG", True)
 
+# La clé secrète sert à signer les données sensibles (sessions, jetons...).
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
@@ -76,11 +92,14 @@ if not SECRET_KEY:
             "d'environnement lorsque DEBUG=False."
         )
 
+# Liste des noms de domaine autorisés à appeler ce serveur.
 ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 
 # Application definition
 
+# Liste des applications chargées par Django. Chaque dossier de apps/
+# correspond à une partie du métier (comptes, devis, paiement...).
 INSTALLED_APPS = [
     # Daphne doit être avant django.contrib.staticfiles : il remplace alors la
     # commande « runserver » par un serveur ASGI, capable de gérer HTTP et
@@ -114,6 +133,9 @@ INSTALLED_APPS = [
     'apps.disputes',
     'apps.trust',
     'apps.diagnosis',
+    # Nouveau coeur MIMO (sessions et parcours agent). Il coexiste avec
+    # l'ancien pré-diagnostic apps.diagnosis tant que la migration est validée.
+    'apps.mimo',
     'apps.adminpanel',
     # Couche temps réel : tickets et connexions WebSocket (voir docs/temps-reel.md).
     'apps.realtime',
@@ -123,6 +145,10 @@ INSTALLED_APPS = [
     # token au moment de la déconnexion (voir apps.accounts.views.LogoutView).
     "rest_framework_simplejwt.token_blacklist",
 ]
+# Réglages de Django REST Framework (DRF), la librairie qui fabrique l'API :
+#  - authentification par jeton JWT ;
+#  - par défaut, il faut être connecté pour appeler l'API ;
+#  - limitation du nombre de requêtes (anti-abus).
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -148,8 +174,20 @@ REST_FRAMEWORK = {
         "message": os.getenv("THROTTLE_RATE_MESSAGE", "30/min"),
         # Délivrance des tickets de connexion WebSocket (POST /api/ws/ticket/).
         "ws_ticket": os.getenv("THROTTLE_RATE_WS_TICKET", "30/min"),
+        # Renvoi du lien de confirmation d'e-mail : chaque appel peut
+        # déclencher un e-mail réel (coût Brevo, risque de spam).
+        "verification_email": os.getenv("THROTTLE_RATE_VERIFICATION_EMAIL", "5/hour"),
+        # Confirmation d'un lien : freine les essais de jetons en boucle.
+        "verify_email": os.getenv("THROTTLE_RATE_VERIFY_EMAIL", "30/min"),
+        # Parcours de vérification : chaque appel peut solliciter l'IA.
+        "parcours": os.getenv("THROTTLE_RATE_PARCOURS", "60/min"),
+        # Voix de l'assistant et transcription (appels audio à l'IA).
+        "voix": os.getenv("THROTTLE_RATE_VOIX", "60/min"),
+        # Mimo, l'assistant IA client : chaque message peut solliciter l'IA.
+        "mimo": os.getenv("THROTTLE_RATE_MIMO", "20/min"),
     },
 }
+# Réglages de la documentation automatique de l'API (Swagger, /api/docs/).
 SPECTACULAR_SETTINGS = {
     "TITLE": "MIMOSY API",
     "DESCRIPTION": "API de la plateforme MIMOSY de mise en relation entre clients et prestataires.",
@@ -174,6 +212,8 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+# Les "middlewares" sont des filtres qui s'appliquent à chaque requête,
+# dans l'ordre : CORS, sécurité, session, CSRF, authentification...
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -184,11 +224,17 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+# CORS : liste des sites (le frontend Vue) qui ont le droit d'appeler l'API
+# depuis le navigateur.
 CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5173,http://localhost:5174,"
     "http://127.0.0.1:5173,http://127.0.0.1:5174",
 )
+# En-têtes de réponse lisibles par le frontend (origine différente) : sans
+# cela, le navigateur masque Retry-After, et la voix (Mimo, Aby, Fassa)
+# réessayait une phrase alors que le quota du fournisseur était épuisé.
+CORS_EXPOSE_HEADERS = ["Retry-After"]
 
 # L'API elle-même est authentifiée par JWT (jeton dans l'en-tête
 # Authorization), pas par cookie de session : le middleware CSRF ne
@@ -199,8 +245,10 @@ CORS_ALLOWED_ORIGINS = env_list(
 # vide tant qu'aucun domaine de production n'est défini.
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
+# Fichier qui contient la liste principale des URL.
 ROOT_URLCONF = 'config.urls'
 
+# Réglages des templates HTML (utilisés surtout par l'admin Django).
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -216,6 +264,7 @@ TEMPLATES = [
     },
 ]
 
+# Point d'entrée pour un serveur WSGI classique (HTTP seulement).
 WSGI_APPLICATION = 'config.wsgi.application'
 
 # ------------------------------------------------------------------
@@ -287,6 +336,8 @@ else:
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+# Connexion à la base de données PostgreSQL. Les informations
+# (nom, utilisateur, mot de passe) viennent des variables d'environnement.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -306,6 +357,8 @@ DATABASES = {
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
 
+# Règles de sécurité appliquées aux mots de passe (longueur minimale,
+# pas trop simple, pas uniquement des chiffres, etc.).
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -325,6 +378,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/
 
+# Langue et fuseau horaire. USE_TZ=True : les dates sont stockées en UTC.
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -337,12 +391,15 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
+# Adresse web des fichiers statiques (CSS/JS de l'admin, Swagger).
 STATIC_URL = 'static/'
 # Dossier où « collectstatic » rassemble les fichiers statiques (admin,
 # documentation de l'API) pour qu'un serveur web (nginx) les serve en
 # production. Sans effet en développement (DEBUG=True).
 STATIC_ROOT = Path(os.getenv("STATIC_ROOT", BASE_DIR / "staticfiles"))
 
+# Fichiers envoyés par les utilisateurs (photos, documents...) :
+# MEDIA_URL = adresse web, MEDIA_ROOT = dossier sur le disque.
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
@@ -358,18 +415,41 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 #
-# Aucun envoi d'email n'est encore implémenté dans les vues : ce
-# réglage utilise donc le backend console (les emails s'affichent dans
-# le terminal du serveur) tant qu'un vrai fournisseur n'est pas
-# configuré. Le nom de réglage correct pour Django est EMAIL_BACKEND
-# (MAILERS n'est pas reconnu par le framework et n'avait donc aucun
-# effet).
+# Les e-mails (confirmation d'adresse, voir apps.accounts.verification)
+# sont envoyés par Brevo, via son API HTTP (apps.accounts.email_backends).
+#   - BREVO_API_KEY défini  → envoi réel par Brevo ;
+#   - BREVO_API_KEY absent  → backend console : l'e-mail s'affiche dans le
+#                             terminal du serveur (développement).
+# EMAIL_BACKEND reste surchargeable explicitement par l'environnement.
+# Pendant les tests, Django remplace toujours ce réglage par le backend
+# « locmem » : aucun e-mail réel n'est jamais envoyé par la suite de tests.
+
+# Clé API Brevo. SECRET : uniquement dans .env, jamais dans le code, jamais
+# dans les logs (le backend ne la journalise pas et ne la renvoie jamais).
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+# Expéditeur affiché. L'adresse doit être un expéditeur validé dans Brevo.
+BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL", "no-reply@mimosy.local")
+BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "MIMOSY")
+# Secondes maximum d'attente de l'API Brevo.
+BREVO_TIMEOUT = float(os.getenv("BREVO_TIMEOUT", "10"))
+
+DEFAULT_FROM_EMAIL = f"{BREVO_SENDER_NAME} <{BREVO_SENDER_EMAIL}>"
 
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",
-    "django.core.mail.backends.console.EmailBackend",
+    "apps.accounts.email_backends.BrevoEmailBackend"
+    if BREVO_API_KEY
+    else "django.core.mail.backends.console.EmailBackend",
 )
 
+# Durée de validité d'un lien de confirmation d'adresse e-mail (heures).
+EMAIL_VERIFICATION_DUREE_HEURES = int(os.getenv("EMAIL_VERIFICATION_DUREE_HEURES", "24"))
+# Délai minimum (secondes) entre deux envois de lien pour un même compte,
+# en plus du throttle DRF « verification_email » (par IP / utilisateur).
+EMAIL_VERIFICATION_DELAI_RENVOI_SECONDES = int(os.getenv("EMAIL_VERIFICATION_DELAI_RENVOI_SECONDES", "60"))
+
+# On utilise notre propre modèle d'utilisateur (apps/accounts/models.py)
+# au lieu de celui fourni par Django.
 AUTH_USER_MODEL = "accounts.User"
 
 # Toujours actifs : ils ne dépendent pas d'un certificat HTTPS et ne
@@ -421,6 +501,125 @@ AVIS_SEUIL_CONFIANCE = float(os.getenv("AVIS_SEUIL_CONFIANCE", "0.70"))
 # documents d'identité (voir apps.verification.services) : désactivée par
 # défaut, à activer explicitement une fois l'infrastructure prête.
 VERIFICATION_IA_ACTIVE = os.getenv("VERIFICATION_IA_ACTIVE", "false").lower() == "true"
+
+# Parcours de vérification du prestataire (voir apps.verification.parcours) :
+# assistant de profil, analyse du justificatif professionnel, cohérence,
+# questions/relances et rapport de l'entretien. Désactivé par défaut, comme
+# les autres IA : sans lui (ou sans ANTHROPIC_API_KEY), des règles
+# déterministes prennent le relais et le parcours reste utilisable.
+# L'IA n'est jamais l'autorité finale : la décision appartient à l'admin.
+PARCOURS_IA_ACTIVE = env_bool("PARCOURS_IA_ACTIVE", False)
+VERIFICATION_IA_MODELE = os.getenv("VERIFICATION_IA_MODELE", "claude-opus-5-5")
+
+# Fournisseur d'IA générative (voir apps.common.ia_fournisseurs) :
+# « gemini », « anthropic » ou « auto » (Gemini si sa clé existe, sinon Claude).
+IA_FOURNISSEUR = os.getenv("IA_FOURNISSEUR", "auto")
+# Clé de l'API Gemini (Google AI Studio). SECRET : uniquement dans .env.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# Listes de modèles essayés dans l'ordre (un modèle peut être retiré ou saturé) :
+# rapides pour la conversation, plus précis pour l'analyse des documents et synthèses.
+GEMINI_MODELES_RAPIDES = env_list("GEMINI_MODELES_RAPIDES", "gemini-flash-lite-latest,gemini-3-flash-preview")
+GEMINI_MODELES_ANALYSE = env_list("GEMINI_MODELES_ANALYSE", "gemini-3-flash-preview,gemini-flash-lite-latest")
+# Synthèse vocale des assistantes IA (voir apps.common.agents_ia). Modèles
+# essayés dans l'ordre : chacun a son propre quota, un modèle épuisé est
+# mis en pause et le suivant prend le relais (même voix, même consignes).
+GEMINI_MODELES_VOIX = env_list(
+    "GEMINI_MODELES_VOIX",
+    "gemini-3.1-flash-tts-preview,gemini-3.8-flash-tts,gemini-2.5-pro-preview-tts,gemini-2.5-flash-preview-tts",
+)
+# Modèles de voix propres à une langue (sinon GEMINI_MODELES_VOIX). Wolof :
+# gemini-3.8-flash-tts est exclu par défaut, son audio en wolof étant rejeté à
+# chaque phrase par le contrôle de durée (~30 s pour 12 mots, journal du
+# 2026-10-06) ; tant qu'il restait dans la liste, il consommait un essai et
+# écartait le modèle 5 minutes sans jamais produire de voix.
+# Variable absente OU vide : la liste générale sans ce modèle.
+GEMINI_MODELES_VOIX_PAR_LANGUE = {
+    "wo": env_list("GEMINI_MODELES_VOIX_WO") or [m for m in GEMINI_MODELES_VOIX if m != "gemini-3.8-flash-tts"],
+}
+# Voix féminines retenues après essais (intelligibilité mesurée, débit posé) :
+# Aby (profil) chaleureuse, Fassa (entretien) douce et précise.
+GEMINI_VOIX_ABY = os.getenv("GEMINI_VOIX_ABY", "Sulafat")
+GEMINI_VOIX_FASSA = os.getenv("GEMINI_VOIX_FASSA", "Vindemiatrix")
+GEMINI_VOIX_MIMO = os.getenv("GEMINI_VOIX_MIMO", "Achird")
+# Durée de conservation d'une phrase déjà synthétisée (économise le quota :
+# l'accueil et les questions fixes ne sont générés qu'une fois).
+VOIX_CACHE_SECONDES = int(os.getenv("VOIX_CACHE_SECONDES", str(30 * 24 * 3600)))
+# Disjoncteur : durée pendant laquelle un modèle IA en échec (hors quota) est
+# écarté au profit du suivant (apps.common.ia_fournisseurs._essayer_modeles).
+IA_PAUSE_APRES_ECHEC_SECONDES = int(os.getenv("IA_PAUSE_APRES_ECHEC_SECONDES", "300"))
+# Synthèse vocale lancée en arrière-plan dès qu'une phrase d'Aby ou de Fassa
+# est produite (désactivée pendant les tests).
+VOIX_PRECHAUFFAGE = os.getenv("VOIX_PRECHAUFFAGE", "true").lower() in ("1", "true", "yes", "on")
+# Transcription des réponses orales : modèle dédié, puis modèles rapides.
+GEMINI_MODELES_TRANSCRIPTION = env_list("GEMINI_MODELES_TRANSCRIPTION", "gemini-3.5-transcribe")
+# Secondes maximum d'attente d'une réponse de l'IA pendant le parcours.
+VERIFICATION_IA_TIMEOUT = float(os.getenv("VERIFICATION_IA_TIMEOUT", "20"))
+
+# Langues de communication d'Aby et de Fassa (apps.common.langues) : fr, en,
+# wo. Les données du profil restent toujours en français.
+PARCOURS_LANGUES = env_list("PARCOURS_LANGUES", "fr,en,wo")
+# Voix serveur en wolof : vide (par défaut) = pas de voix, le texte s'affiche ;
+# « gemini » = essai expérimental (Gemini TTS ne documente pas le wolof : à
+# faire valider par un locuteur natif avant la production).
+VOIX_WOLOF = os.getenv("VOIX_WOLOF", "").strip().lower()
+# Transcription du wolof par Kiriku (AIHubSN/Kiriku-Wolof-ASR, Whisper affiné
+# sur le wolof), servi à part (profil Docker « asr-wolof ») : URL du service.
+# Vide : transcription par le modèle Gemini généraliste avec consigne wolof.
+ASR_WOLOF_URL = os.getenv("ASR_WOLOF_URL", "").strip().rstrip("/")
+ASR_WOLOF_TIMEOUT = float(os.getenv("ASR_WOLOF_TIMEOUT", "60"))
+
+# Entretien professionnel avec Fassa : 5 à 7 questions principales adaptées
+# au dossier, 5 minutes maximum.
+ENTRETIEN_QUESTIONS_MIN = 5
+ENTRETIEN_QUESTIONS_MAX = 7
+ENTRETIEN_DUREE_MAX_SECONDES = int(os.getenv("ENTRETIEN_DUREE_MAX_SECONDES", "300"))
+# Taille maximale de l'enregistrement vidéo envoyé à la fin de l'entretien.
+ENTRETIEN_ENREGISTREMENT_TAILLE_MAX = int(os.getenv("ENTRETIEN_ENREGISTREMENT_TAILLE_MAX", str(60 * 1024 * 1024)))
+
+# Fallback IA de la recherche intelligente (voir apps.services.suggestions_ia) :
+# appelé seulement quand la recherche classique ne trouve rien, pour proposer
+# des services/catégories RÉELS du catalogue. Désactivé par défaut, comme les
+# autres analyses IA : sans lui, la recherche fonctionne normalement.
+RECHERCHE_IA_ACTIVE = os.getenv("RECHERCHE_IA_ACTIVE", "false").lower() == "true"
+# Clé de l'API Claude (Anthropic). SECRET : uniquement dans .env, jamais dans le code.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+RECHERCHE_IA_MODELE = os.getenv("RECHERCHE_IA_MODELE", "claude-opus-5")
+# Secondes maximum d'attente de l'IA avant de répondre sans suggestion.
+RECHERCHE_IA_TIMEOUT = float(os.getenv("RECHERCHE_IA_TIMEOUT", "15"))
+# Durée de conservation des suggestions pour une même requête (secondes).
+RECHERCHE_IA_CACHE_SECONDES = int(os.getenv("RECHERCHE_IA_CACHE_SECONDES", "3600"))
+
+# Mimo, l'assistant IA client (voir apps.diagnosis.mimo) : il qualifie le
+# besoin du client et propose un pré-diagnostic, en ne choisissant que des
+# catégories/services RÉELS du catalogue. Désactivé par défaut comme les
+# autres IA : sans lui, le pré-diagnostic par règles (apps.diagnosis.services)
+# prend le relais et le parcours client fonctionne normalement.
+MIMO_IA_ACTIVE = env_bool("MIMO_IA_ACTIVE", True)
+MIMO_IA_TIMEOUT = float(os.getenv("MIMO_IA_TIMEOUT", "20"))
+# Agent MIMO (apps.mimo.agent) : le modèle consulte MIMOSY via des outils
+# réels avant de répondre. false = ancien parcours (une réponse JSON par
+# tour, apps.diagnosis.mimo), conservé comme repli pendant la migration.
+MIMO_AGENT_ACTIF = env_bool("MIMO_AGENT_ACTIF", True)
+# Nombre maximal d'allers-retours modèle ↔ outils dans un même tour.
+MIMO_AGENT_ETAPES_MAX = int(os.getenv("MIMO_AGENT_ETAPES_MAX", "5"))
+# Modèle Claude de l'agent quand IA_FOURNISSEUR=anthropic (sinon VERIFICATION_IA_MODELE).
+MIMO_MODELE_ANTHROPIC = os.getenv("MIMO_MODELE_ANTHROPIC", "")
+# Taille maximale d'une photo jointe à une demande (apps.prestations.pieces_jointes).
+PIECE_JOINTE_TAILLE_MAX_OCTETS = int(os.getenv("PIECE_JOINTE_TAILLE_MAX_OCTETS", str(5 * 1024 * 1024)))
+
+# Recherche sémantique locale : embeddings, pas IA générative. Désactivée par
+# défaut afin de ne pas télécharger le modèle dans un environnement qui ne
+# souhaite pas l'utiliser. Après téléchargement, LOCAL_SEULEMENT=true permet
+# un fonctionnement hors ligne.
+RECHERCHE_SEMANTIQUE_ACTIVE = os.getenv("RECHERCHE_SEMANTIQUE_ACTIVE", "false").lower() == "true"
+RECHERCHE_SEMANTIQUE_MODELE = os.getenv(
+    "RECHERCHE_SEMANTIQUE_MODELE", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+RECHERCHE_SEMANTIQUE_LOCAL_SEULEMENT = os.getenv("RECHERCHE_SEMANTIQUE_LOCAL_SEULEMENT", "false").lower() == "true"
+# Score = cosinus à 80 % + règles à 20 % maximum. En dessous de ce seuil,
+# aucun résultat n'est affiché comme pertinent.
+RECHERCHE_SEMANTIQUE_SEUIL = float(os.getenv("RECHERCHE_SEMANTIQUE_SEUIL", "0.58"))
+RECHERCHE_SEMANTIQUE_CACHE_SECONDES = int(os.getenv("RECHERCHE_SEMANTIQUE_CACHE_SECONDES", "86400"))
 
 # Seuil minimal de ressemblance (SequenceMatcher.ratio) en dessous duquel
 # un champ extrait de la CNI est considéré comme ne correspondant pas aux
@@ -496,6 +695,17 @@ PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
 # le frontend ne peut jamais transmettre ni influencer ce choix.
 PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")
 
+# Démonstration du retrait SANS déboursement PayDunya. L'API de déboursement
+# PayDunya (api/v2/disburse) n'accepte que des clés LIVE : avec des clés de
+# test, elle répond "LIVE Private Key and Token combination is invalid",
+# il n'existe pas de payout de test. Activé, ce mode fait passer le retrait
+# par tout le parcours interne (validation, déduction verrouillée,
+# transaction, idempotence) puis le marque SIMULE — jamais REUSSI, et sans
+# appeler PayDunya. N'a AUCUN effet si PAYDUNYA_MODE=live : un retrait réel
+# ne peut jamais être remplacé par une simulation (voir
+# apps.wallet.providers.paydunya.payout_demo_actif).
+PAYDUNYA_PAYOUT_DEMO = os.getenv("PAYDUNYA_PAYOUT_DEMO", "false").lower() == "true"
+
 # URLs que PayDunya appelle depuis ses propres serveurs (jamais depuis
 # le navigateur du client) pour confirmer, de façon asynchrone, l'issue
 # d'un paiement ou d'un déboursement. Doivent être des URLs absolues et
@@ -516,6 +726,7 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
 # les autres journaux (Django, autres apps) gardent leur comportement.
 # Le code du wallet ne journalise jamais de clé PayDunya, de hash, ni de
 # valeur de token de facture (voir apps/wallet/services.py).
+# Configuration des journaux (logs) affichés dans le terminal.
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -527,5 +738,40 @@ LOGGING = {
     },
     "loggers": {
         "apps.wallet": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        # Envoi des e-mails (Brevo) : jamais de clé API, de jeton ni de lien
+        # de confirmation dans ces journaux (voir apps.accounts.verification).
+        "apps.accounts": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        # Fournisseurs d'IA : modèle utilisé pour chaque voix, quotas épuisés (jamais de clé).
+        "apps.common": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        # Voix d'Aby et de Fassa : une ligne par phrase servie ou refusée (agent,
+        # index, langue, code d'erreur, durée, taille) ; jamais le texte lui-même.
+        "apps.verification": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
 }
+
+
+# Tests automatisés : jamais d'appel à une IA réelle (coût, données de test
+# envoyées à un tiers, résultats non reproductibles), même si .env contient
+# des clés. Les tests qui vérifient l'IA la simulent explicitement.
+import sys as _sys
+
+if len(_sys.argv) > 1 and _sys.argv[1] == "test":
+    GEMINI_API_KEY = ""
+    ANTHROPIC_API_KEY = ""
+    IA_FOURNISSEUR = "auto"
+    PARCOURS_IA_ACTIVE = False
+    MIMO_IA_ACTIVE = False
+    # Les tests de l'agent l'activent explicitement (apps.mimo.tests_agent).
+    MIMO_AGENT_ACTIF = False
+    PARCOURS_LANGUES = ["fr", "en", "wo"]
+    VOIX_WOLOF = ""
+    ASR_WOLOF_URL = ""
+    VOIX_PRECHAUFFAGE = False
+    # Les fichiers envoyés pendant les tests (pièces d'identité, vidéos...)
+    # vont dans un dossier temporaire, supprimé à la fin : media/ n'est plus pollué.
+    import atexit as _atexit
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    MEDIA_ROOT = Path(_tempfile.mkdtemp(prefix="mimosy-tests-media-"))
+    _atexit.register(_shutil.rmtree, MEDIA_ROOT, ignore_errors=True)

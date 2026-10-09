@@ -21,6 +21,11 @@ architecture cible ou idéale — seulement le code tel qu'il est aujourd'hui.
   celle qui a le plus de règles implicites à connaître avant d'y toucher.
 - [`ux-parcours.md`](./ux-parcours.md) : le parcours complet, écran par écran, qui relie les
   trois documents ci-dessus à l'expérience réelle côté client et prestataire.
+- [`testing-baseline.md`](./testing-baseline.md) : état de référence de la suite de tests
+  backend, isolation des tests (`TestCase` / `TransactionTestCase`) et threads.
+- [`voix-assistantes.md`](./voix-assistantes.md) : chaîne de voix des assistantes IA, modèles par
+  langue, échecs explicites (`Retry-After`, « Réécouter ») et journaux pour diagnostiquer.
+- [`CHANGELOG-IA.md`](./CHANGELOG-IA.md) : journal des modifications des chantiers IA.
 
 ## Principe général du projet
 

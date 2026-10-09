@@ -1,3 +1,5 @@
+# On importe transaction pour enregistrer la demande et ses photos d'un seul bloc.
+from django.db import transaction
 # On importe les outils de sérialisation de Django REST Framework.
 from rest_framework import serializers
 
@@ -5,6 +7,8 @@ from rest_framework import serializers
 from apps.services.models import PrestataireService
 # On importe le modèle DemandePrestation.
 from .models import DemandePrestation
+# On importe les règles des pièces jointes (photos envoyées à Mimo).
+from .pieces_jointes import NB_MAX_PAR_DEMANDE, pieces_en_attente, representation
 
 
 # Ce serializer affiche une demande de prestation avec les noms lisibles.
@@ -32,6 +36,8 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
     litige_en_cours = serializers.SerializerMethodField()
     # La réponse de devis acceptée à l'origine de cette demande, si elle existe.
     devis_reponse = serializers.SerializerMethodField()
+    # Les photos jointes par le client (servies par une URL protégée, jamais le chemin du fichier).
+    pieces_jointes = serializers.SerializerMethodField()
 
     # Cette classe interne configure quel modèle et quels champs utiliser.
     class Meta:
@@ -58,6 +64,7 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
             "litige_en_cours",
             "paiement",
             "devis_reponse",
+            "pieces_jointes",
         ]
 
         # Ces champs ne peuvent pas être modifiés directement par l'utilisateur.
@@ -124,6 +131,10 @@ class DemandePrestationSerializer(serializers.ModelSerializer):
 
         return Avis.objects.filter(prestation_id=obj.id).exists()
 
+    # Cette méthode liste les pièces jointes de la demande.
+    def get_pieces_jointes(self, obj):
+        return [representation(piece) for piece in obj.pieces_jointes.all()]
+
     # Cette méthode calcule le nom complet du prestataire.
     def get_prestataire_nom(self, obj):
         user = obj.prestataire.user
@@ -140,7 +151,19 @@ class DemandePrestationCreateSerializer(serializers.ModelSerializer):
     """
     Serializer utilisé par le client pour créer ou modifier
     une demande de prestation.
+
+    pieces_jointes (facultatif) : identifiants des photos déjà envoyées
+    par CE client (pendant la conversation avec Mimo) et pas encore
+    rattachées à une demande. Elles sont rattachées à la demande envoyée.
     """
+
+    # Les identifiants des photos à rattacher (écriture seulement).
+    pieces_jointes = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        write_only=True,
+        max_length=NB_MAX_PAR_DEMANDE,
+    )
 
     # Cette classe interne configure quel modèle et quels champs utiliser.
     class Meta:
@@ -152,7 +175,43 @@ class DemandePrestationCreateSerializer(serializers.ModelSerializer):
             "description",
             "date_souhaitee",
             "budget",
+            "pieces_jointes",
         ]
+
+    # Cette méthode vérifie que chaque photo appartient au client et n'est pas déjà utilisée.
+    def validate_pieces_jointes(self, identifiants):
+        request = self.context.get("request")
+        identifiants = list(dict.fromkeys(identifiants))
+        pieces = pieces_en_attente(request.user, identifiants) if request else []
+        if len(pieces) != len(identifiants):
+            raise serializers.ValidationError("Photo introuvable ou déjà rattachée à une demande.")
+        return pieces
+
+    # Cette méthode rattache les photos validées à la demande.
+    @staticmethod
+    def _rattacher(demande, pieces):
+        deja = demande.pieces_jointes.count()
+        if deja + len(pieces) > NB_MAX_PAR_DEMANDE:
+            raise serializers.ValidationError(
+                {"pieces_jointes": f"Au maximum {NB_MAX_PAR_DEMANDE} photos par demande."}
+            )
+        for piece in pieces:
+            piece.demande = demande
+            piece.save(update_fields=["demande"])
+
+    @transaction.atomic
+    def create(self, validated_data):
+        pieces = validated_data.pop("pieces_jointes", [])
+        demande = super().create(validated_data)
+        self._rattacher(demande, pieces)
+        return demande
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        pieces = validated_data.pop("pieces_jointes", [])
+        demande = super().update(instance, validated_data)
+        self._rattacher(demande, pieces)
+        return demande
 
     # Cette méthode vérifie la cohérence entre le prestataire et le service choisis.
     def validate(self, attrs):

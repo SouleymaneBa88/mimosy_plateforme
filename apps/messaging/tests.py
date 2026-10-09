@@ -1,3 +1,4 @@
+# Tests de l'API de messagerie (envoi de messages entre client et prestataire).
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -15,6 +16,7 @@ class MessageAPITests(APITestCase):
         """Prépare un client et un prestataire pouvant échanger des messages."""
 
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="client_msg_test",
             email="client-msg@test.com",
             password="TestPassword123!",
@@ -25,6 +27,7 @@ class MessageAPITests(APITestCase):
         )
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="prestataire_msg_test",
             email="prestataire-msg@test.com",
             password="TestPassword123!",
@@ -140,6 +143,7 @@ class MessageAPITests(APITestCase):
         )
 
         autre_client = User.objects.create_user(
+            email_verified=True,
             username="autre_client_msg",
             email="autre-msg@test.com",
             password="TestPassword123!",

@@ -1,10 +1,13 @@
+# Tests de la vérification d'identité des prestataires : envoi de documents,
+# accès aux fichiers, décisions de l'admin, lecture automatique (OCR),
+# comparaison avec le profil, et visibilité des services selon la vérification.
 import io
 import threading
 
 from django.urls import reverse
 from PIL import Image
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APITransactionTestCase
 
 from apps.accounts.models import User
 from apps.profiles.models import ProfilPrestataire
@@ -13,6 +16,28 @@ from .models import DocumentIdentite
 from .services import comparer_avec_profil, extraire_champs
 
 
+def decider_dossier(client, admin, profil, decision="VALIDE", motif=""):
+    """Décision finale de l'admin sur le dossier complet (parcours de vérification).
+
+    Depuis le parcours, valider/rejeter UN document ne change plus le statut du
+    prestataire : seule cette décision le fait. Le dossier est placé « en revue »
+    (parcours terminé) pour que la validation soit autorisée.
+    """
+    from apps.verification.models import DossierVerification
+    from apps.verification.parcours import obtenir_dossier
+
+    dossier = obtenir_dossier(profil)
+    DossierVerification.objects.filter(pk=dossier.pk).update(statut="DOSSIER_EN_REVUE")
+    client.force_authenticate(user=admin)
+    return client.post(
+        reverse("verification-admin-dossier-decision", args=[dossier.id]),
+        {"decision": decision, "motif": motif},
+        format="json",
+    )
+
+
+
+# Petite fonction : crée une image de test en mémoire.
 def image_de_test(format_="JPEG", content_type="image/jpeg", taille=(20, 20)):
     buffer = io.BytesIO()
     Image.new("RGB", taille, color="white").save(buffer, format=format_)
@@ -22,9 +47,10 @@ def image_de_test(format_="JPEG", content_type="image/jpeg", taille=(20, 20)):
     return SimpleUploadedFile("piece.jpg", buffer.read(), content_type=content_type)
 
 
-class VerificationTestCase(APITestCase):
+class _VerificationBaseMixin:
     """
-    Classe de base pour tous les tests de vérification.
+    Données et suivi des threads communs à tous les tests de vérification
+    (voir VerificationTestCase et VerificationTransactionTestCase).
 
     Gestion des threads daemon et des connexions PostgreSQL :
     ─────────────────────────────────────────────────────────
@@ -40,8 +66,8 @@ class VerificationTestCase(APITestCase):
        donc les threads restent réellement asynchrones.
     2. tearDown : on join() chaque thread avec un timeout cumulatif.
        join() attend la fin naturelle du thread — il ne bloque que si
-       le thread tourne encore. Quand il se termine, close_old_connections()
-       dans traiter_verification_document() a déjà fermé la connexion DB.
+       le thread tourne encore. Quand il se termine,
+       traiter_verification_document_en_arriere_plan() a déjà fermé sa connexion DB.
     3. Si un thread n'est pas fini dans le délai, le test échoue
        explicitement (pas de teardown silencieux).
 
@@ -54,6 +80,7 @@ class VerificationTestCase(APITestCase):
     # < 0.1 s ; les tests avec mock sleep utilisent 0.5 s maximum.
     THREAD_JOIN_TIMEOUT = 5.0
 
+    # Avant chaque test : on remplace threading.Thread pour suivre les threads d'analyse créés.
     def setUp(self):
         # Sauvegarder la classe réelle avant de la remplacer.
         self._original_thread_class = threading.Thread
@@ -69,6 +96,7 @@ class VerificationTestCase(APITestCase):
             dans threads_list à l'instanciation. Comportement identique à
             threading.Thread en production : asynchrone, daemon respecté.
             """
+            # À la création, le thread s'ajoute à la liste des threads suivis.
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 threads_list.append(self)
@@ -76,6 +104,7 @@ class VerificationTestCase(APITestCase):
         threading.Thread = _TrackingThread
 
         self.prestataire_user = User.objects.create_user(
+            email_verified=True,
             username="verif_prestataire",
             email="verif-prestataire@test.com",
             password="TestPassword123!",
@@ -90,6 +119,7 @@ class VerificationTestCase(APITestCase):
         )
 
         self.client_user = User.objects.create_user(
+            email_verified=True,
             username="verif_client",
             email="verif-client@test.com",
             password="TestPassword123!",
@@ -100,6 +130,7 @@ class VerificationTestCase(APITestCase):
         )
 
         self.admin_user = User.objects.create_user(
+            email_verified=True,
             username="verif_admin",
             email="verif-admin@test.com",
             password="TestPassword123!",
@@ -109,6 +140,7 @@ class VerificationTestCase(APITestCase):
             role=User.Role.ADMIN,
         )
 
+    # Après chaque test : on remet threading.Thread et on attend la fin des threads.
     def tearDown(self):
         # 1. Restaurer threading.Thread avant d'attendre les threads,
         #    pour que le join() lui-même n'utilise pas le patch.
@@ -133,7 +165,26 @@ class VerificationTestCase(APITestCase):
             )
 
 
+class VerificationTestCase(_VerificationBaseMixin, APITestCase):
+    """Classe de base des tests de vérification : chaque test tourne dans une
+    transaction annulée à la fin (isolation et rapidité)."""
+
+
+class VerificationTransactionTestCase(_VerificationBaseMixin, APITransactionTestCase):
+    """
+    Pour les SEULS tests qui attendent le résultat du thread d'analyse.
+
+    Le thread a sa propre connexion PostgreSQL : il ne voit que des données
+    validées (COMMIT). Dans un TestCase, tout reste dans la transaction du
+    test, donc le thread ne trouverait jamais le document soumis. Ici les
+    écritures sont réellement validées, puis la base est vidée après chaque
+    test (plus lent : à réserver à ces cas).
+    """
+
+
+# Tests de l'envoi de documents par le prestataire.
 class SoumissionDocumentAPITests(VerificationTestCase):
+    # Vérifie qu'aucun document donne le statut "non soumis".
     def test_aucun_document_renvoie_non_soumis(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("mon-document-identite"))
@@ -162,6 +213,7 @@ class SoumissionDocumentAPITests(VerificationTestCase):
         # Le message d'information doit être présent dans la réponse.
         self.assertIn("message", response.data)
 
+    # Vérifie qu'un format de fichier non accepté est refusé.
     def test_format_non_accepte_refuse(self):
         buffer = io.BytesIO(b"pas une image")
         from django.core.files.uploadedfile import SimpleUploadedFile
@@ -177,6 +229,7 @@ class SoumissionDocumentAPITests(VerificationTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un client ne peut pas envoyer de document.
     def test_client_ne_peut_pas_soumettre_de_document(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
@@ -187,6 +240,7 @@ class SoumissionDocumentAPITests(VerificationTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que remplacer un document remet son résultat à zéro.
     def test_remplacer_un_document_reinitialise_le_resultat(self):
         self.client.force_authenticate(user=self.prestataire_user)
         url = reverse("mon-document-identite")
@@ -202,6 +256,7 @@ class SoumissionDocumentAPITests(VerificationTestCase):
         self.assertEqual(DocumentIdentite.objects.filter(prestataire=self.profil).count(), 1)
         self.assertNotEqual(document.score_correspondance, 0.42)
 
+    # Vérifie que le numéro du document est masqué dans la vue du prestataire.
     def test_numero_document_masque_dans_la_vue_prestataire(self):
         self.client.force_authenticate(user=self.prestataire_user)
         document = DocumentIdentite.objects.create(
@@ -219,6 +274,7 @@ class SoumissionDocumentAPITests(VerificationTestCase):
 class TypeDocumentAPITests(VerificationTestCase):
     """Un prestataire peut soumettre un document par type (pièce d'identité, diplôme...)."""
 
+    # Vérifie qu'un diplôme et une pièce d'identité peuvent exister en même temps.
     def test_diplome_et_piece_identite_coexistent(self):
         self.client.force_authenticate(user=self.prestataire_user)
         url = reverse("mon-document-identite")
@@ -255,6 +311,7 @@ class TypeDocumentAPITests(VerificationTestCase):
         # donnees_extraites est None à ce stade (analyse non encore faite).
         self.assertIsNone(response.data["donnees_extraites"])
 
+    # Vérifie qu'un type de document inconnu est refusé.
     def test_type_document_inconnu_refuse(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.post(
@@ -265,6 +322,7 @@ class TypeDocumentAPITests(VerificationTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un type sans document renvoie "non soumis".
     def test_consulter_un_type_precis_sans_document_renvoie_non_soumis(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("mon-document-identite"), {"type_document": "CERTIFICATION"})
@@ -272,6 +330,7 @@ class TypeDocumentAPITests(VerificationTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["statut"], DocumentIdentite.Statut.NON_SOUMIS)
 
+    # Vérifie que "mes documents" liste tous les types envoyés.
     def test_mes_documents_liste_tous_les_types_soumis(self):
         self.client.force_authenticate(user=self.prestataire_user)
         url = reverse("mon-document-identite")
@@ -287,6 +346,7 @@ class TypeDocumentAPITests(VerificationTestCase):
             {"PIECE_IDENTITE", "DIPLOME"},
         )
 
+    # Vérifie que l'admin peut filtrer par type de document.
     def test_admin_peut_filtrer_par_type_document(self):
         DocumentIdentite.objects.create(prestataire=self.profil, fichier=image_de_test(), type_document="PIECE_IDENTITE")
         DocumentIdentite.objects.create(prestataire=self.profil, fichier=image_de_test(), type_document="DIPLOME")
@@ -299,19 +359,24 @@ class TypeDocumentAPITests(VerificationTestCase):
         self.assertEqual(response.data[0]["type_document"], "DIPLOME")
 
 
+# Tests de l'accès au fichier d'un document (image de la pièce).
 class FichierDocumentAPITests(VerificationTestCase):
+    # Avant chaque test : on envoie un document.
     def setUp(self):
         super().setUp()
         self.document = DocumentIdentite.objects.create(prestataire=self.profil, fichier=image_de_test())
 
+    # Vérifie que le propriétaire peut récupérer son fichier.
     def test_proprietaire_peut_recuperer_son_fichier(self):
         self.client.force_authenticate(user=self.prestataire_user)
         url = reverse("document-identite-fichier", kwargs={"pk": self.document.id})
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
+    # Vérifie qu'un autre prestataire ne peut pas récupérer le fichier.
     def test_autre_prestataire_ne_peut_pas_recuperer_le_fichier(self):
         autre_user = User.objects.create_user(
+            email_verified=True,
             username="verif_prestataire_2",
             email="verif-prestataire-2@test.com",
             password="TestPassword123!",
@@ -327,12 +392,14 @@ class FichierDocumentAPITests(VerificationTestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie qu'un client ne peut pas récupérer le fichier.
     def test_client_ne_peut_pas_recuperer_le_fichier(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("document-identite-fichier", kwargs={"pk": self.document.id})
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que l'admin peut récupérer le fichier.
     def test_admin_peut_recuperer_le_fichier(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("document-identite-fichier", kwargs={"pk": self.document.id})
@@ -340,7 +407,9 @@ class FichierDocumentAPITests(VerificationTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
+# Tests des décisions de l'admin.
 class AdminVerificationAPITests(VerificationTestCase):
+    # Avant chaque test : on crée un document à vérifier.
     def setUp(self):
         super().setUp()
         self.document = DocumentIdentite.objects.create(
@@ -349,17 +418,20 @@ class AdminVerificationAPITests(VerificationTestCase):
             statut=DocumentIdentite.Statut.A_VERIFIER,
         )
 
+    # Vérifie qu'un prestataire ne peut pas lister la file admin.
     def test_prestataire_ne_peut_pas_lister_la_file_admin(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("verification-admin-document-list"))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que l'admin peut lister la file.
     def test_admin_peut_lister_la_file(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("verification-admin-document-list"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
 
+    # Vérifie que l'admin peut valider un document.
     def test_admin_peut_valider(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("verification-admin-document-valider", kwargs={"pk": self.document.id})
@@ -369,8 +441,11 @@ class AdminVerificationAPITests(VerificationTestCase):
         self.document.refresh_from_db()
         self.profil.refresh_from_db()
         self.assertEqual(self.document.statut, DocumentIdentite.Statut.VALIDE)
-        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.VERIFIE)
+        # Valider un document ne valide pas le prestataire : seule la décision
+        # sur le dossier complet le fait (parcours de vérification).
+        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.EN_ATTENTE)
 
+    # Vérifie que l'admin peut rejeter avec un motif.
     def test_admin_peut_rejeter_avec_motif(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("verification-admin-document-rejeter", kwargs={"pk": self.document.id})
@@ -380,15 +455,19 @@ class AdminVerificationAPITests(VerificationTestCase):
         self.document.refresh_from_db()
         self.profil.refresh_from_db()
         self.assertEqual(self.document.statut, DocumentIdentite.Statut.REJETE)
-        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.REJETE)
+        # Rejeter un document demande un nouveau document ; le statut du
+        # prestataire n'est décidé que sur le dossier complet.
+        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.EN_ATTENTE)
         self.assertTrue(self.document.motif_rejet)
 
+    # Vérifie qu'un rejet sans motif est refusé.
     def test_rejeter_sans_motif_refuse(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("verification-admin-document-rejeter", kwargs={"pk": self.document.id})
         response = self.client.post(url, {})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un prestataire ne peut pas valider.
     def test_prestataire_ne_peut_pas_valider(self):
         self.client.force_authenticate(user=self.prestataire_user)
         url = reverse("verification-admin-document-valider", kwargs={"pk": self.document.id})
@@ -399,11 +478,13 @@ class AdminVerificationAPITests(VerificationTestCase):
 class ExtractionEtComparaisonTests(VerificationTestCase):
     """Tests unitaires purs (pas d'appel réseau/IA) sur les fonctions déterministes."""
 
+    # Vérifie qu'un texte vide donne tous les champs à None.
     def test_extraire_champs_sans_texte_renvoie_tout_none(self):
         champs = extraire_champs(None)
         self.assertIsNone(champs["nom"])
         self.assertIsNone(champs["prenom"])
 
+    # Vérifie que les libellés (NOM, PRÉNOM...) sont reconnus.
     def test_extraire_champs_reconnait_les_libelles(self):
         texte = "REPUBLIQUE DU SENEGAL\nNOM: FALL\nPRENOM: IBRAHIMA\n15/03/1995"
         champs = extraire_champs(texte)
@@ -411,6 +492,7 @@ class ExtractionEtComparaisonTests(VerificationTestCase):
         self.assertEqual(champs["prenom"], "IBRAHIMA")
         self.assertEqual(champs["date_naissance"], "1995-03-15")
 
+    # Vérifie qu'on ne devine rien quand aucun libellé n'est reconnu.
     def test_extraire_champs_sans_libelle_reconnu_ne_devine_pas(self):
         texte = "Un texte quelconque sans structure de piece d'identite."
         champs = extraire_champs(texte)
@@ -451,6 +533,7 @@ class ExtractionEtComparaisonTests(VerificationTestCase):
         self.assertEqual(champs["date_naissance"], "1995-03-15")
         self.assertEqual(champs["date_expiration"], "2030-01-01")
 
+    # Vérifie que la comparaison ignore majuscules et accents.
     def test_comparaison_correspond_malgre_casse_et_accents(self):
         self.profil.user.last_name = "Fall"
         self.profil.user.first_name = "Ibrahima"
@@ -463,6 +546,7 @@ class ExtractionEtComparaisonTests(VerificationTestCase):
         self.assertTrue(resultat["champs"]["nom"]["correspond"])
         self.assertTrue(resultat["champs"]["prenom"]["correspond"])
 
+    # Vérifie qu'une vraie différence est détectée.
     def test_comparaison_detecte_une_incoherence_reelle(self):
         self.profil.user.last_name = "Fall"
         self.profil.user.first_name = "Ibrahima"
@@ -620,6 +704,7 @@ class _PublicationBaseTestCase(VerificationTestCase):
     uniquement le statut de la CNI.
     """
 
+    # Avant chaque test : un prestataire avec un service et une offre publiables.
     def setUp(self):
         super().setUp()
 
@@ -683,18 +768,21 @@ class _PublicationBaseTestCase(VerificationTestCase):
 class PublicationSansCNITests(_PublicationBaseTestCase):
     """Scénario 1 — CNI absente : service non visible publiquement."""
 
+    # Vérifie que le service n'apparaît pas dans la recherche sans CNI.
     def test_service_non_visible_dans_recherche_sans_cni(self):
         # Aucun document soumis, statut_verification = EN_ATTENTE par défaut.
         self.assertFalse(self._rechercher_offre())
 
+    # Vérifie qu'il n'apparaît pas dans la liste publique sans CNI.
     def test_service_non_visible_dans_liste_publique_sans_cni(self):
         self.assertFalse(self._liste_publique_offres())
 
-    def test_creation_offre_toujours_possible_sans_cni(self):
+    def test_creation_offre_refusee_avant_validation_du_dossier(self):
         """
-        Un prestataire peut créer une offre même sans CNI validée.
-        L'offre est stockée comme brouillon (est_publiable=False),
-        elle n'est pas refusée par l'API.
+        Règle du parcours de vérification : tant que son dossier n'est pas
+        validé par un administrateur, un prestataire ne peut pas publier
+        d'offre (403, IsPrestataireValide). Avant le parcours, l'offre était
+        acceptée comme brouillon non publiable.
         """
         # Supprimer l'offre créée dans setUp pour pouvoir en créer une nouvelle.
         self.offre.delete()
@@ -709,14 +797,14 @@ class PublicationSansCNITests(_PublicationBaseTestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        # est_publiable doit être False (CNI non validée).
-        self.assertFalse(response.data["est_publiable"])
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(PrestataireService.objects.filter(prestataire=self.profil).exists())
 
 
 class PublicationCNIEnAnalyseTests(_PublicationBaseTestCase):
     """Scénario 2 — CNI EN_ANALYSE : service non visible publiquement."""
 
+    # Avant chaque test : la CNI est en cours d'analyse.
     def setUp(self):
         super().setUp()
         DocumentIdentite.objects.create(
@@ -727,6 +815,7 @@ class PublicationCNIEnAnalyseTests(_PublicationBaseTestCase):
         )
         # statut_verification reste EN_ATTENTE — analogue à ce qu'analyser_document() fait.
 
+    # Vérifie que le service reste invisible pendant l'analyse.
     def test_service_non_visible_cni_en_analyse(self):
         self.assertFalse(self._rechercher_offre())
 
@@ -734,6 +823,7 @@ class PublicationCNIEnAnalyseTests(_PublicationBaseTestCase):
 class PublicationCNIAVerifierTests(_PublicationBaseTestCase):
     """Scénario 3 — CNI A_VERIFIER : service non visible publiquement."""
 
+    # Avant chaque test : la CNI attend la décision de l'admin.
     def setUp(self):
         super().setUp()
         DocumentIdentite.objects.create(
@@ -743,6 +833,7 @@ class PublicationCNIAVerifierTests(_PublicationBaseTestCase):
             statut=DocumentIdentite.Statut.A_VERIFIER,
         )
 
+    # Vérifie que le service reste invisible tant que l'admin n'a pas validé.
     def test_service_non_visible_cni_a_verifier(self):
         self.assertFalse(self._rechercher_offre())
 
@@ -750,6 +841,7 @@ class PublicationCNIAVerifierTests(_PublicationBaseTestCase):
 class PublicationCNIRejeteTests(_PublicationBaseTestCase):
     """Scénario 4 — CNI REJETE : service non visible publiquement."""
 
+    # Avant chaque test : la CNI a été rejetée.
     def setUp(self):
         super().setUp()
         DocumentIdentite.objects.create(
@@ -761,6 +853,7 @@ class PublicationCNIRejeteTests(_PublicationBaseTestCase):
         self.profil.statut_verification = ProfilPrestataire.StatutVerification.REJETE
         self.profil.save()
 
+    # Vérifie que le service reste invisible après un rejet (recherche et liste publique).
     def test_service_non_visible_cni_rejetee(self):
         self.assertFalse(self._rechercher_offre())
 
@@ -918,6 +1011,7 @@ class FluxValidationAdminTests(VerificationTestCase):
     statut_verification=VERIFIE → offre visible.
     """
 
+    # Avant chaque test : un prestataire avec un document à vérifier.
     def setUp(self):
         super().setUp()
         self.categorie = Categorie.objects.create(nom="Nettoyage", statut="ACTIVE")
@@ -947,7 +1041,8 @@ class FluxValidationAdminTests(VerificationTestCase):
         """
         Soumet un document → statut EN_ANALYSE (202 immédiat).
         On force manuellement A_VERIFIER (simule la fin du thread asynchrone).
-        Admin valide → statut_verification = VERIFIE.
+        Admin valide le document : le prestataire n'est pas encore VERIFIE.
+        Admin valide le dossier complet → statut_verification = VERIFIE.
         L'offre apparaît dans la recherche.
         """
         # 1. Soumission par le prestataire.
@@ -975,14 +1070,22 @@ class FluxValidationAdminTests(VerificationTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["statut"], DocumentIdentite.Statut.VALIDE)
 
-        # 3. Profil prestataire mis à jour.
+        # 3. Le document seul ne suffit pas : l'offre reste invisible.
+        self.profil.refresh_from_db()
+        self.assertEqual(self.profil.statut_verification, ProfilPrestataire.StatutVerification.EN_ATTENTE)
+        self.client.force_authenticate(user=None)
+        response = self.client.get(reverse("recherche"), {"service": "Nettoyage de vitres"})
+        self.assertNotIn(str(self.offre.id), [item["id"] for item in response.data.get("results", [])])
+
+        # 4. Décision finale sur le dossier complet : profil vérifié.
+        self.assertEqual(decider_dossier(self.client, self.admin_user, self.profil).status_code, status.HTTP_200_OK)
         self.profil.refresh_from_db()
         self.assertEqual(
             self.profil.statut_verification,
             ProfilPrestataire.StatutVerification.VERIFIE,
         )
 
-        # 4. L'offre est maintenant visible dans la recherche.
+        # 5. L'offre est maintenant visible dans la recherche.
         self.client.force_authenticate(user=None)
         response = self.client.get(reverse("recherche"), {"service": "Nettoyage de vitres"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -1009,13 +1112,11 @@ class FluxValidationAdminTests(VerificationTestCase):
                 ).data.get("results", [])
             ]
         )
-        # Rejeter.
-        self.client.force_authenticate(user=self.admin_user)
-        self.client.post(
-            reverse("verification-admin-document-rejeter", kwargs={"pk": document.id}),
-            {"motif": "Document illisible, veuillez en soumettre un nouveau."},
-            format="json",
+        # Rejeter : décision finale de l'admin sur le dossier.
+        reponse = decider_dossier(
+            self.client, self.admin_user, self.profil, "REJETE", "Document illisible, veuillez en soumettre un nouveau."
         )
+        self.assertEqual(reponse.status_code, status.HTTP_200_OK)
         self.profil.refresh_from_db()
         self.assertEqual(
             self.profil.statut_verification,
@@ -1084,6 +1185,7 @@ class SeuilCorrespondanceConfigurableTests(VerificationTestCase):
     influence réellement la comparaison et que la valeur par défaut est 0.80.
     """
 
+    # Vérifie que le seuil de ressemblance par défaut est 0,80.
     def test_seuil_par_defaut_est_0_80(self):
         from django.conf import settings
         seuil = getattr(settings, "SEUIL_CORRESPONDANCE_CHAMP", 0.80)
@@ -1289,6 +1391,7 @@ def _creer_image_cni_synthetique(nom, prenom, date_naissance, numero="1234567890
     return buffer
 
 
+# Petite fonction : transforme l'image de CNI synthétique en fichier envoyable.
 def _image_cni_vers_uploaded_file(nom, prenom, date_naissance, numero="1234567890"):
     buf = _creer_image_cni_synthetique(nom, prenom, date_naissance, numero)
     return SimpleUploadedFile("cni_test.jpg", buf.read(), content_type="image/jpeg")
@@ -1320,6 +1423,7 @@ class OCRReelTests(VerificationTestCase):
         VERIFICATION_IA_ACTIVE=true python manage.py test apps.verification.tests.OCRReelTests
     """
 
+    # setUpClass : s'exécute une seule fois ; on charge le modèle d'IA à l'avance.
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -1333,12 +1437,14 @@ class OCRReelTests(VerificationTestCase):
             cls._modele_disponible = False
             cls._modele_erreur = str(exc)
 
+    # Passe le test si le modèle d'IA n'a pas pu être chargé.
     def _skip_si_modele_indisponible(self):
         if not getattr(self, "_modele_disponible", False):
             self.skipTest(
                 f"Modèle TrOCR indisponible : {getattr(self, '_modele_erreur', '?')}"
             )
 
+    # Avant chaque test : on prépare un prestataire connecté.
     def setUp(self):
         super().setUp()
         import datetime
@@ -1653,6 +1759,7 @@ class TraitementAsynchroneTestCase(VerificationTestCase):
     prêt à être traité.
     """
 
+    # Avant chaque test : on prépare un prestataire connecté.
     def setUp(self):
         super().setUp()
         self.document = DocumentIdentite.objects.create(
@@ -1712,6 +1819,7 @@ class Soumission202APITests(VerificationTestCase):
         delai_ocr = 0.5        # secondes : durée simulée du traitement OCR
         delai_max_acceptable = 0.3  # la réponse HTTP doit arriver avant ça
 
+        # Fausse analyse volontairement lente (pour vérifier que l'envoi n'attend pas).
         def analyse_lente(document):
             time.sleep(delai_ocr)
 
@@ -1735,6 +1843,14 @@ class Soumission202APITests(VerificationTestCase):
             delai_max_acceptable,
             f"La réponse HTTP a pris {duree:.3f}s — le thread bloque encore le HTTP.",
         )
+
+
+class TraitementArrierePlanReelTests(VerificationTransactionTestCase):
+    """
+    Tests 5-6 : le thread lancé par le POST traite réellement le document.
+    TransactionTestCase car le thread (autre connexion) doit voir le document
+    validé en base (voir VerificationTransactionTestCase).
+    """
 
     def test_traitement_en_arriere_plan_produit_a_verifier(self):
         """

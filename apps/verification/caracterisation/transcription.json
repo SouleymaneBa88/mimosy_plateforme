@@ -1,0 +1,55 @@
+{
+  "appels": [
+    {
+      "langue": "fr",
+      "mime": "audio/webm",
+      "octets": 9
+    },
+    {
+      "langue": "wo",
+      "mime": "audio/ogg",
+      "octets": 9
+    },
+    {
+      "langue": "wo",
+      "mime": "audio/webm",
+      "octets": 9
+    }
+  ],
+  "francais": {
+    "corps": {
+      "texte": "Je répare les fuites."
+    },
+    "statut": 200
+  },
+  "indisponible": {
+    "corps": {
+      "detail": "La transcription automatique est indisponible : écrivez votre réponse."
+    },
+    "statut": 503
+  },
+  "sans_fichier": {
+    "corps": {
+      "audio": "Un enregistrement audio est requis."
+    },
+    "statut": 400
+  },
+  "type_refuse": {
+    "corps": {
+      "audio": "Format audio non accepté."
+    },
+    "statut": 400
+  },
+  "video_webm": {
+    "corps": {
+      "texte": "Je répare les fuites."
+    },
+    "statut": 200
+  },
+  "wolof": {
+    "corps": {
+      "texte": "Je répare les fuites."
+    },
+    "statut": 200
+  }
+}

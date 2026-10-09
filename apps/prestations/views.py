@@ -15,23 +15,33 @@ Aucune suppression (DELETE) n'est possible : l'annulation logique
 conserve un historique complet des demandes.
 """
 
+# On importe FileResponse pour renvoyer le contenu d'une pièce jointe.
+from django.http import FileResponse
 # On importe timezone pour dater la réalisation d'une prestation.
 from django.utils import timezone
 # On importe les codes de statut HTTP et les outils de vues de Django REST Framework.
 from rest_framework import status, viewsets
 # On importe le décorateur qui permet d'ajouter des actions personnalisées.
 from rest_framework.decorators import action
+# On importe l'erreur 404 de Django REST Framework.
+from rest_framework.exceptions import NotFound
 # On importe la permission qui exige d'être connecté.
 from rest_framework.permissions import IsAuthenticated
 # On importe l'objet Response pour renvoyer une réponse HTTP.
 from rest_framework.response import Response
+# On importe la vue de base de Django REST Framework.
+from rest_framework.views import APIView
 
 # On importe le modèle User pour vérifier les rôles.
 from apps.accounts.models import User
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified
 # On importe le modèle Notification pour prévenir les utilisateurs des changements.
 from apps.notifications.models import Notification
-# On importe le modèle DemandePrestation.
-from .models import DemandePrestation
+# On importe les modèles DemandePrestation et PieceJointeDemande.
+from .models import DemandePrestation, PieceJointeDemande
+# On importe la règle d'accès aux pièces jointes.
+from .pieces_jointes import peut_consulter
 # On importe la permission qui vérifie que l'utilisateur est client.
 from .permissions import IsClient
 # On importe la validation d'une prestation réalisée (libération des fonds).
@@ -76,8 +86,9 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
     # Cette méthode définit les permissions selon l'action demandée.
     def get_permissions(self):
         # Seul un client connecté peut créer une nouvelle demande.
+        # Son adresse e-mail doit aussi être confirmée.
         if self.action == "create":
-            return [IsAuthenticated(), IsClient()]
+            return [IsAuthenticated(), IsClient(), IsEmailVerified()]
         return [IsAuthenticated()]
 
     # Cette méthode construit le queryset visible selon le rôle de l'utilisateur.
@@ -104,7 +115,7 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
             "client",
             "service",
             "prestataire__user",
-        ).order_by("-date_creation")
+        ).prefetch_related("pieces_jointes").order_by("-date_creation")
 
         # Un administrateur voit toutes les demandes.
         if user.is_superuser or user.role == User.Role.ADMIN:
@@ -552,3 +563,49 @@ class DemandePrestationViewSet(viewsets.ModelViewSet):
             DemandePrestationSerializer(demande, context=self.get_serializer_context()).data,
             status=status.HTTP_200_OK,
         )
+
+
+# Cette vue sert (ou supprime) une pièce jointe de demande, jamais en accès direct.
+class PieceJointeFichierView(APIView):
+    """
+    GET    /api/pieces-jointes-demande/{id}/fichier/ : le fichier lui-même.
+    DELETE /api/pieces-jointes-demande/{id}/fichier/ : retrait par le client,
+           tant que la pièce n'est rattachée à aucune demande envoyée.
+
+    Accès (apps.prestations.pieces_jointes.peut_consulter) : le client qui
+    l'a déposée, le prestataire de la demande liée, ou un admin. Tout autre
+    utilisateur reçoit 404, pour ne pas révéler l'existence du fichier.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _piece(self, request, pk):
+        piece = (
+            PieceJointeDemande.objects.select_related("demande__prestataire")
+            .filter(pk=pk)
+            .first()
+        )
+        if piece is None or not peut_consulter(request.user, piece):
+            raise NotFound("Pièce jointe introuvable.")
+        return piece
+
+    def get(self, request, pk):
+        piece = self._piece(request, pk)
+        if not piece.fichier:
+            raise NotFound("Aucun fichier associé.")
+        reponse = FileResponse(piece.fichier.open("rb"), content_type=piece.mime or "image/jpeg")
+        reponse["X-Content-Type-Options"] = "nosniff"
+        reponse["Cache-Control"] = "private, no-store"
+        reponse["Content-Disposition"] = f'inline; filename="{piece.nom_original or "photo.jpg"}"'
+        return reponse
+
+    def delete(self, request, pk):
+        piece = self._piece(request, pk)
+        if piece.deposee_par_id != request.user.id or piece.demande_id is not None:
+            return Response(
+                {"detail": "Seule une photo pas encore envoyée peut être retirée, par son auteur."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        piece.fichier.delete(save=False)
+        piece.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

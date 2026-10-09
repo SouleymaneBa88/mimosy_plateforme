@@ -1,0 +1,171 @@
+{
+  "conversation": [
+    {
+      "agent": "aby",
+      "champ": null,
+      "langue": "wo",
+      "role": "assistant",
+      "texte": "Salaamaalekum, maa ngi tudd Aby. Man laa assistante IA bu MIMOSY. Dinaa leen dimbali ngir mottali seeni xibaar yu njëkk ci seen liggéey. Du yàgg, ay minit rekk. Mën ngeen ma tontu ci kàddu walla ci bind."
+    },
+    {
+      "agent": "aby",
+      "champ": "metier",
+      "langue": "wo",
+      "role": "assistant",
+      "texte": "Lan mooy seen métier?"
+    }
+  ],
+  "langue_dossier": "wo",
+  "prechauffees": [
+    [
+      "aby",
+      "Salaamaalekum, maa ngi tudd Aby. Man laa assistante IA bu MIMOSY. Dinaa leen dimbali ngir mottali seeni xibaar yu njëkk ci seen liggéey. Du yàgg, ay minit rekk. Mën ngeen ma tontu ci kàddu walla ci bind.",
+      "wo"
+    ],
+    [
+      "aby",
+      "Lan mooy seen métier?",
+      "wo"
+    ]
+  ],
+  "reponse": {
+    "corps": {
+      "compte": {
+        "email": "carac-prestataire@test.com",
+        "nom": "Awa Ndiaye",
+        "telephone": "770000095"
+      },
+      "conversation": [
+        {
+          "agent": "aby",
+          "champ": null,
+          "langue": "wo",
+          "role": "assistant",
+          "texte": "Salaamaalekum, maa ngi tudd Aby. Man laa assistante IA bu MIMOSY. Dinaa leen dimbali ngir mottali seeni xibaar yu njëkk ci seen liggéey. Du yàgg, ay minit rekk. Mën ngeen ma tontu ci kàddu walla ci bind."
+        },
+        {
+          "agent": "aby",
+          "champ": "metier",
+          "langue": "wo",
+          "role": "assistant",
+          "texte": "Lan mooy seen métier?"
+        }
+      ],
+      "langue": {
+        "bcp47": "wo-SN",
+        "code": "wo",
+        "dictee_navigateur": false,
+        "libelle": "Wolof (Sénégal)",
+        "voix_navigateur": false,
+        "voix_serveur": false
+      },
+      "langues": [
+        {
+          "bcp47": "fr-FR",
+          "code": "fr",
+          "dictee_navigateur": true,
+          "libelle": "Français",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        {
+          "bcp47": "en-US",
+          "code": "en",
+          "dictee_navigateur": true,
+          "libelle": "English",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        {
+          "bcp47": "wo-SN",
+          "code": "wo",
+          "dictee_navigateur": false,
+          "libelle": "Wolof (Sénégal)",
+          "voix_navigateur": false,
+          "voix_serveur": false
+        }
+      ],
+      "manquants": [
+        "metier",
+        "domaine",
+        "services",
+        "experience",
+        "zone_intervention",
+        "description"
+      ],
+      "options": {
+        "domaine": [
+          {
+            "id": "<uuid>",
+            "libelle": "Plomberie"
+          },
+          {
+            "id": "<uuid>",
+            "libelle": "Électricité"
+          }
+        ],
+        "services": []
+      },
+      "question": {
+        "champ": "metier",
+        "exemple": "Électricien, plombier, femme de ménage...",
+        "options": [],
+        "pourquoi": "Mooy li client yi di njëkk a gis ci seen profil.",
+        "texte": "Lan mooy seen métier?",
+        "type": "texte",
+        "valeur_actuelle": ""
+      },
+      "questions": {
+        "description": {
+          "pourquoi": "Li ngeen bind dina feeñ ci seen profil public.",
+          "texte": "Wone leen seen liggéey ci ay kàddu yu gàtt.",
+          "type": "texte_long"
+        },
+        "disponibilites": {
+          "exemple": "Altine ba Gaawu, 8 h ba 18 h",
+          "pourquoi": "Noonu client yi dinañu xam kañ lañu leen mën a woo.",
+          "texte": "Ban fan ak ban waxtu ngeen di liggéey?",
+          "type": "texte"
+        },
+        "domaine": {
+          "pourquoi": "Domaine bi dafay tax client yi gis leen ci catégorie bu baax bi.",
+          "texte": "Ci ban domaine ngeen di liggéey?",
+          "type": "texte_ou_choix"
+        },
+        "experience": {
+          "pourquoi": "Seen expérience dafay dëgëral kóolute client yi; wax leen 0 su fekkee yéena ngi tàmbali.",
+          "texte": "Ñaata at ngeen def métier bii?",
+          "type": "nombre"
+        },
+        "metier": {
+          "exemple": "Électricien, plombier, femme de ménage...",
+          "pourquoi": "Mooy li client yi di njëkk a gis ci seen profil.",
+          "texte": "Lan mooy seen métier?",
+          "type": "texte"
+        },
+        "services": {
+          "pourquoi": "Bu seen profil validé, mën ngeen tëral tarif bu nekk ci ñoom.",
+          "texte": "Ban xeetu liggéey ngeen gën di def?",
+          "type": "texte_ou_choix_multiple"
+        },
+        "zone_intervention": {
+          "exemple": "Dakar Plateau, Médina, Parcelles Assainies...",
+          "pourquoi": "Noonu, MIMOSY dina leen yónnee demande yu jege seen kër.",
+          "texte": "Ci ban dëkk walla ban quartier ngeen di liggéey?",
+          "type": "texte"
+        }
+      },
+      "resume": {
+        "description": "",
+        "disponibilites": "",
+        "domaine": null,
+        "experience": null,
+        "metier": "",
+        "services": [],
+        "zone_intervention": ""
+      },
+      "termine": false
+    },
+    "statut": 200
+  }
+}

@@ -40,6 +40,8 @@ from rest_framework.views import APIView
 
 # On importe le modèle User pour vérifier les rôles.
 from apps.accounts.models import User
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified, IsPrestataireValide
 # On importe le modèle Notification pour prévenir les utilisateurs.
 from apps.notifications.models import Notification
 # On importe le modèle ProfilPrestataire.
@@ -73,6 +75,13 @@ class DisponibiliteViewSet(viewsets.ModelViewSet):
     serializer_class = DisponibiliteSerializer
     # Seul le propriétaire (ou un admin) peut gérer une disponibilité.
     permission_classes = [IsDisponibiliteOwnerOrAdmin]
+
+    # Publier une nouvelle disponibilité exige en plus un e-mail confirmé et
+    # un profil validé par l'administration.
+    def get_permissions(self):
+        if self.action == "create":
+            return [IsDisponibiliteOwnerOrAdmin(), IsEmailVerified(), IsPrestataireValide()]
+        return super().get_permissions()
 
     # Cette méthode construit le queryset visible selon le rôle de l'utilisateur.
     def get_queryset(self):
@@ -249,9 +258,9 @@ class RendezVousViewSet(viewsets.ModelViewSet):
 
     # Cette méthode définit les permissions selon l'action demandée.
     def get_permissions(self):
-        # Seul un client connecté peut créer un nouveau rendez-vous.
+        # Seul un client connecté, à l'e-mail confirmé, peut demander un rendez-vous.
         if self.action == "create":
-            return [IsAuthenticated(), IsClient()]
+            return [IsAuthenticated(), IsClient(), IsEmailVerified()]
         return [IsAuthenticated()]
 
     # Cette méthode construit le queryset visible selon le rôle de l'utilisateur.

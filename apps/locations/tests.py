@@ -1,3 +1,4 @@
+# Tests de l'API des localisations (adresse + coordonnées GPS des utilisateurs).
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -10,6 +11,7 @@ from .models import Localisation
 class LocalisationAPITests(APITestCase):
     """Vérifie la validation des coordonnées GPS."""
 
+    # Avant chaque test : on crée des utilisateurs de test.
     def setUp(self):
         self.user = User.objects.create_user(
             username="localisation_test",
@@ -107,6 +109,7 @@ class LocalisationAPITests(APITestCase):
 class LocalisationUpsertEtPermissionsAPITests(APITestCase):
     """Vérifie la création, la modification et l'isolation par utilisateur d'une localisation."""
 
+    # Avant chaque test : on crée des utilisateurs et l'adresse de l'API.
     def setUp(self):
         self.user = User.objects.create_user(
             username="localisation_upsert",
@@ -127,6 +130,7 @@ class LocalisationUpsertEtPermissionsAPITests(APITestCase):
             role=User.Role.CLIENT,
         )
 
+    # Vérifie qu'un visiteur non connecté ne peut pas créer de localisation.
     def test_anonyme_ne_peut_pas_creer_de_localisation(self):
         response = self.client.post(
             reverse("localisation-list"),
@@ -159,6 +163,7 @@ class LocalisationUpsertEtPermissionsAPITests(APITestCase):
         self.assertEqual(localisation.adresse, "Rue 12")
         self.assertEqual(localisation.quartier, "Mermoz")
 
+    # Vérifie qu'un utilisateur ne voit que sa propre localisation.
     def test_utilisateur_ne_voit_que_sa_propre_localisation(self):
         Localisation.objects.create(
             user=self.autre_user,
@@ -184,6 +189,7 @@ class LocalisationUpsertEtPermissionsAPITests(APITestCase):
         ids = [item["id"] for item in response.data]
         self.assertEqual(ids, [str(ma_localisation.id)])
 
+    # Vérifie qu'un utilisateur ne peut pas modifier la localisation de quelqu'un d'autre.
     def test_utilisateur_ne_peut_pas_modifier_la_localisation_d_un_autre(self):
         localisation_autre = Localisation.objects.create(
             user=self.autre_user,
@@ -205,6 +211,7 @@ class LocalisationUpsertEtPermissionsAPITests(APITestCase):
         localisation_autre.refresh_from_db()
         self.assertEqual(localisation_autre.adresse, "Rue autre")
 
+    # Vérifie que les coordonnées sont enregistrées sans perte de précision.
     def test_les_coordonnees_persistent_correctement_apres_enregistrement(self):
         self.client.force_authenticate(user=self.user)
         response = self.client.post(
@@ -234,6 +241,7 @@ class LocalisationClientParcoursTests(APITestCase):
     la recherche « Autour de moi », voir frontend useLocation.positionPourRecherche).
     """
 
+    # Avant chaque test : on crée un client et l'adresse de l'API.
     def setUp(self):
         self.client_user = User.objects.create_user(
             username="loc_parcours_client", email="loc-parcours-client@test.com", password="TestPassword123!",
@@ -241,12 +249,14 @@ class LocalisationClientParcoursTests(APITestCase):
         )
         self.url = reverse("localisation-list")
 
+    # Petite fonction d'aide : enregistre une localisation pour le client (valeurs modifiables).
     def enregistrer(self, **surcharges):
         donnees = {"adresse": "Rue 10", "ville": "Dakar", "quartier": "Grand Yoff", "latitude": "14.716677", "longitude": "-17.467686"}
         donnees.update(surcharges)
         self.client.force_authenticate(user=self.client_user)
         return self.client.post(self.url, donnees, format="json")
 
+    # Vérifie qu'un client sans localisation reçoit une liste vide.
     def test_localisation_absente_renvoie_une_liste_vide(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.get(self.url)
@@ -254,9 +264,11 @@ class LocalisationClientParcoursTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(list(response.data), [])
 
+    # Vérifie qu'un visiteur non connecté ne peut pas lire de localisation.
     def test_anonyme_ne_peut_pas_lire_de_localisation(self):
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
 
+    # Vérifie que latitude et longitude ne sont jamais inversées.
     def test_latitude_et_longitude_ne_sont_jamais_inversees(self):
         self.enregistrer()
         response = self.client.get(self.url)
@@ -264,6 +276,7 @@ class LocalisationClientParcoursTests(APITestCase):
         self.assertEqual(response.data[0]["latitude"], "14.716677")
         self.assertEqual(response.data[0]["longitude"], "-17.467686")
 
+    # Vérifie qu'on peut mettre à jour seulement les coordonnées GPS.
     def test_mise_a_jour_des_seules_coordonnees_gps(self):
         localisation_id = self.enregistrer().data["id"]
         response = self.client.patch(
@@ -278,6 +291,7 @@ class LocalisationClientParcoursTests(APITestCase):
         self.assertEqual(str(localisation.longitude), "-17.440000")
         self.assertEqual(localisation.adresse, "Rue 10")  # l'adresse saisie n'est pas touchée
 
+    # Vérifie qu'une latitude impossible est refusée.
     def test_mise_a_jour_avec_latitude_invalide_refusee(self):
         localisation_id = self.enregistrer().data["id"]
         response = self.client.patch(
@@ -285,6 +299,7 @@ class LocalisationClientParcoursTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'une longitude impossible est refusée.
     def test_mise_a_jour_avec_longitude_invalide_refusee(self):
         localisation_id = self.enregistrer().data["id"]
         response = self.client.patch(
@@ -292,6 +307,7 @@ class LocalisationClientParcoursTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'une localisation enregistrée permet la recherche "autour de moi".
     def test_la_localisation_enregistree_permet_la_recherche_de_proximite(self):
         from decimal import Decimal
 

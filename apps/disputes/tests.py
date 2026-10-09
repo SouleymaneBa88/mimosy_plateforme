@@ -22,6 +22,7 @@ from apps.wallet.models import Payment, Wallet
 from .models import Litige, PreuveLitige
 
 
+# Petite fonction d'aide : crée une petite image JPEG en mémoire (pour les preuves).
 def image_de_test():
     buffer = io.BytesIO()
     Image.new("RGB", (20, 20), color="white").save(buffer, format="JPEG")
@@ -29,7 +30,9 @@ def image_de_test():
     return SimpleUploadedFile("preuve.jpg", buffer.read(), content_type="image/jpeg")
 
 
+# Classe de base : prépare les utilisateurs et une demande de prestation pour les tests de litiges.
 class LitigeTestCase(APITestCase):
+    # Avant chaque test : on crée un admin, un client, un prestataire et une demande.
     def setUp(self):
         self.client_user = User.objects.create_user(
             username="litige_client",
@@ -86,7 +89,9 @@ class LitigeTestCase(APITestCase):
         )
 
 
+# Tests de l'ouverture d'un litige.
 class OuvertureLitigeAPITests(LitigeTestCase):
+    # Vérifie que le client de la demande peut ouvrir un litige.
     def test_client_de_la_demande_peut_ouvrir_un_litige(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
@@ -103,6 +108,7 @@ class OuvertureLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.data["description_client"], "Le prestataire n'a pas fini le travail convenu.")
         self.assertEqual(response.data["description_prestataire"], "")
 
+    # Vérifie que le prestataire de la demande peut aussi ouvrir un litige.
     def test_prestataire_de_la_demande_peut_ouvrir_un_litige(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.post(
@@ -118,6 +124,7 @@ class OuvertureLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.data["description_prestataire"], "Le client ne répond plus depuis la fin de la prestation.")
         self.assertEqual(response.data["description_client"], "")
 
+    # Vérifie qu'un client extérieur à la demande ne peut pas ouvrir de litige.
     def test_client_etranger_a_la_demande_ne_peut_pas_ouvrir_de_litige(self):
         self.client.force_authenticate(user=self.autre_client)
         response = self.client.post(
@@ -127,6 +134,7 @@ class OuvertureLitigeAPITests(LitigeTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie qu'un visiteur non connecté ne peut pas ouvrir de litige.
     def test_anonyme_ne_peut_pas_ouvrir_de_litige(self):
         response = self.client.post(
             reverse("litige-list"),
@@ -135,7 +143,9 @@ class OuvertureLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
+# Tests de la consultation des litiges (qui voit quoi).
 class ConsultationLitigeAPITests(LitigeTestCase):
+    # Avant chaque test : on crée un litige.
     def setUp(self):
         super().setUp()
         self.litige = Litige.objects.create(
@@ -147,6 +157,7 @@ class ConsultationLitigeAPITests(LitigeTestCase):
             description_client="Détails du problème.",
         )
 
+    # Vérifie que le client concerné voit son litige.
     def test_client_concerne_voit_son_litige(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.get(reverse("litige-list"))
@@ -154,6 +165,7 @@ class ConsultationLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
+    # Vérifie que le prestataire concerné voit le litige.
     def test_prestataire_concerne_voit_le_litige(self):
         self.client.force_authenticate(user=self.prestataire_user)
         response = self.client.get(reverse("litige-list"))
@@ -161,6 +173,7 @@ class ConsultationLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
+    # Vérifie qu'un client extérieur ne voit pas le litige.
     def test_client_etranger_ne_voit_pas_le_litige(self):
         self.client.force_authenticate(user=self.autre_client)
         response = self.client.get(reverse("litige-list"))
@@ -168,6 +181,7 @@ class ConsultationLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 0)
 
+    # Vérifie que l'admin voit tous les litiges.
     def test_admin_voit_tous_les_litiges(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("litige-list"))
@@ -176,7 +190,9 @@ class ConsultationLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.data["count"], 1)
 
 
+# Tests du dépôt de preuves.
 class PreuveLitigeAPITests(LitigeTestCase):
+    # Avant chaque test : on crée un litige.
     def setUp(self):
         super().setUp()
         self.litige = Litige.objects.create(
@@ -187,6 +203,7 @@ class PreuveLitigeAPITests(LitigeTestCase):
             motif="Travail non terminé",
         )
 
+    # Vérifie que le client peut déposer une preuve.
     def test_client_peut_deposer_une_preuve(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("litige-ajouter-preuve", kwargs={"pk": self.litige.id})
@@ -199,6 +216,7 @@ class PreuveLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(PreuveLitige.objects.filter(litige=self.litige).count(), 1)
 
+    # Vérifie que l'autre partie est prévenue quand une preuve est déposée.
     def test_depot_de_preuve_notifie_l_autre_partie(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("litige-ajouter-preuve", kwargs={"pk": self.litige.id})
@@ -228,6 +246,7 @@ class PreuveLitigeAPITests(LitigeTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    # Vérifie qu'un format de fichier non accepté est refusé.
     def test_fichier_non_accepte_refuse(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("litige-ajouter-preuve", kwargs={"pk": self.litige.id})
@@ -236,6 +255,7 @@ class PreuveLitigeAPITests(LitigeTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie que l'auteur d'une preuve peut récupérer son fichier.
     def test_proprietaire_peut_recuperer_le_fichier_de_sa_preuve(self):
         self.client.force_authenticate(user=self.client_user)
         preuve = PreuveLitige.objects.create(
@@ -248,6 +268,7 @@ class PreuveLitigeAPITests(LitigeTestCase):
         response = self.client.get(reverse("preuve-litige-fichier", kwargs={"pk": preuve.id}))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
+    # Vérifie qu'une personne extérieure ne peut pas récupérer le fichier.
     def test_tiers_ne_peut_pas_recuperer_le_fichier(self):
         preuve = PreuveLitige.objects.create(
             litige=self.litige,
@@ -261,7 +282,9 @@ class PreuveLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
+# Tests des décisions de l'admin (prise en charge, résolution).
 class DecisionLitigeAPITests(LitigeTestCase):
+    # Avant chaque test : on crée un litige.
     def setUp(self):
         super().setUp()
         self.litige = Litige.objects.create(
@@ -273,12 +296,14 @@ class DecisionLitigeAPITests(LitigeTestCase):
             description_client="Détails du problème.",
         )
 
+    # Vérifie qu'un client ne peut pas prendre en charge un litige.
     def test_client_ne_peut_pas_prendre_en_charge(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("litige-prendre-en-charge", kwargs={"pk": self.litige.id})
         response = self.client.post(url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que l'admin peut prendre en charge puis résoudre un litige.
     def test_admin_peut_prendre_en_charge_puis_resoudre(self):
         self.client.force_authenticate(user=self.admin_user)
 
@@ -296,12 +321,14 @@ class DecisionLitigeAPITests(LitigeTestCase):
         self.assertTrue(self.litige.decision_admin)
         self.assertIsNotNone(self.litige.date_traitement)
 
+    # Vérifie qu'une résolution sans texte de décision est refusée.
     def test_resoudre_sans_decision_est_refuse(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("litige-resoudre", kwargs={"pk": self.litige.id})
         response = self.client.post(url, {})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'un litige déjà traité ne peut pas recevoir une nouvelle décision.
     def test_litige_deja_traite_ne_peut_pas_etre_retraite(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("litige-resoudre", kwargs={"pk": self.litige.id})
@@ -311,7 +338,9 @@ class DecisionLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+# Tests de la synthèse factuelle d'un litige.
 class AnalyseLitigeAPITests(LitigeTestCase):
+    # Avant chaque test : on crée un litige.
     def setUp(self):
         super().setUp()
         self.litige = Litige.objects.create(
@@ -323,11 +352,13 @@ class AnalyseLitigeAPITests(LitigeTestCase):
             description_client="Détails du problème.",
         )
 
+    # Vérifie qu'un client ne peut pas voir la synthèse.
     def test_client_ne_peut_pas_voir_l_analyse(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.get(reverse("litige-analyse", kwargs={"pk": self.litige.id}))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que l'admin reçoit une synthèse de faits, jamais un verdict.
     def test_admin_recoit_une_synthese_factuelle_jamais_un_verdict(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get(reverse("litige-analyse", kwargs={"pk": self.litige.id}))
@@ -344,6 +375,7 @@ class AnalyseLitigeAPITests(LitigeTestCase):
 class GelFondsLitigeAPITests(LitigeTestCase):
     """Le montant net dû au prestataire doit être bloqué dès l'ouverture du litige (voir apps.disputes.services.geler_fonds_litige)."""
 
+    # Avant chaque test : on crée un paiement réussi et un wallet pour le prestataire.
     def setUp(self):
         super().setUp()
         # Solde disponible = montant net attendu (15000 - 10% de commission = 13500),
@@ -359,6 +391,7 @@ class GelFondsLitigeAPITests(LitigeTestCase):
             fonds_liberes=True,
         )
 
+    # Vérifie que l'ouverture d'un litige gèle le montant net dû au prestataire.
     def test_ouverture_litige_bloque_le_montant_net_du_prestataire(self):
         self.client.force_authenticate(user=self.client_user)
         response = self.client.post(
@@ -391,6 +424,7 @@ class GelFondsLitigeAPITests(LitigeTestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertFalse(response.data["fonds_geles"])
 
+    # Vérifie qu'on ne gèle jamais deux fois les mêmes fonds.
     def test_gel_des_fonds_est_idempotent(self):
         from .services import geler_fonds_litige
 
@@ -413,6 +447,7 @@ class GelFondsLitigeAPITests(LitigeTestCase):
 class RepriseEtReattributionAPITests(LitigeTestCase):
     """Décision Admin « refaire sous 24h », expiration du délai, réattribution et répartition 75/25."""
 
+    # Avant chaque test : on crée un litige avec fonds gelés et un second prestataire vérifié.
     def setUp(self):
         super().setUp()
         self.wallet = Wallet.objects.create(prestataire=self.profil, solde_disponible=Decimal("13500.00"))
@@ -458,6 +493,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
         self.litige.date_limite_reprise = self.litige.date_decision + timedelta(hours=settings.LITIGE_DELAI_REPRISE_HEURES)
         self.litige.save(update_fields=["date_decision", "date_limite_reprise"])
 
+    # Vérifie que l'admin peut demander une reprise sous 24 h.
     def test_admin_demande_une_reprise_sous_24h(self):
         self.client.force_authenticate(user=self.admin_user)
         url = reverse("litige-demander-reprise", kwargs={"pk": self.litige.id})
@@ -484,12 +520,14 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
             Notification.objects.filter(utilisateur=self.client_user, type=Notification.Type.LITIGE).first()
         )
 
+    # Vérifie qu'un client ne peut pas demander une reprise.
     def test_client_ne_peut_pas_demander_une_reprise(self):
         self.client.force_authenticate(user=self.client_user)
         url = reverse("litige-demander-reprise", kwargs={"pk": self.litige.id})
         response = self.client.post(url, {"decision_admin": "Test."})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    # Vérifie que le prestataire peut confirmer la reprise dans le délai.
     def test_prestataire_confirme_la_reprise_dans_les_temps(self):
         self.client.force_authenticate(user=self.admin_user)
         self.client.post(reverse("litige-demander-reprise", kwargs={"pk": self.litige.id}), {"decision_admin": "Reprise demandée."})
@@ -504,6 +542,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
         self.assertIsNotNone(self.litige.date_confirmation_reprise)
         self.assertIn("Fuite réparée définitivement.", self.litige.description_prestataire)
 
+    # Vérifie qu'un client ne peut pas confirmer une reprise.
     def test_client_ne_peut_pas_confirmer_une_reprise(self):
         self.client.force_authenticate(user=self.admin_user)
         self.client.post(reverse("litige-demander-reprise", kwargs={"pk": self.litige.id}), {"decision_admin": "Reprise demandée."})
@@ -528,6 +567,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
             ).first()
         )
 
+    # Vérifie que le prestataire ne peut plus confirmer après la date limite.
     def test_prestataire_ne_peut_plus_confirmer_apres_expiration(self):
         self.client.force_authenticate(user=self.admin_user)
         self.client.post(reverse("litige-demander-reprise", kwargs={"pk": self.litige.id}), {"decision_admin": "Reprise demandée."})
@@ -550,6 +590,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
         self.litige.refresh_from_db()
         self.assertEqual(self.litige.statut, Litige.Statut.DELAI_EXPIRE)
 
+    # Vérifie qu'on ne peut pas réattribuer avant la fin du délai.
     def test_reattribution_impossible_avant_expiration_du_delai(self):
         self.client.force_authenticate(user=self.admin_user)
         self.client.post(reverse("litige-demander-reprise", kwargs={"pk": self.litige.id}), {"decision_admin": "Reprise demandée."})
@@ -560,6 +601,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie qu'on ne peut pas réattribuer à un prestataire non vérifié.
     def test_reattribution_refuse_un_prestataire_non_verifie(self):
         non_verifie_user = User.objects.create_user(
             username="litige_prestataire_non_verifie",
@@ -583,6 +625,7 @@ class RepriseEtReattributionAPITests(LitigeTestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # Vérifie le partage 75 % / 25 % et la notification des trois personnes.
     def test_reattribution_repartit_75_25_et_notifie_les_trois_parties(self):
         self.client.force_authenticate(user=self.admin_user)
         self.client.post(reverse("litige-demander-reprise", kwargs={"pk": self.litige.id}), {"decision_admin": "Reprise demandée."})

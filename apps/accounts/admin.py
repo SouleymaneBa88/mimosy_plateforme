@@ -14,9 +14,9 @@ class UserAdmin(BaseUserAdmin):
     model = User
 
     # Les colonnes affichées dans la liste des utilisateurs.
-    list_display = ("email", "username", "first_name", "last_name", "role", "is_staff", "is_active")
+    list_display = ("email", "username", "first_name", "last_name", "role", "email_verified", "is_staff", "is_active")
     # Les filtres proposés dans la barre latérale de l'admin.
-    list_filter = ("role", "is_staff", "is_active")
+    list_filter = ("role", "email_verified", "is_staff", "is_active")
     # Les champs sur lesquels on peut faire une recherche textuelle.
     search_fields = ("email", "username", "first_name", "last_name", "phone")
     # L'ordre d'affichage par défaut de la liste.
@@ -26,6 +26,7 @@ class UserAdmin(BaseUserAdmin):
     fieldsets = (
         (None, {"fields": ("email", "username", "password")}),
         ("Informations personnelles", {"fields": ("first_name", "last_name", "phone", "profile_photo", "role")}),
+        ("Vérification de l'e-mail", {"fields": ("email_verified", "email_verified_at")}),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
         ("Dates importantes", {"fields": ("last_login", "date_joined")}),
     )

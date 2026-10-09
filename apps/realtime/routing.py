@@ -10,6 +10,7 @@ from django.urls import path
 
 from .consumers import EvenementsConsumer
 
+# Liste des routes WebSocket : /ws/ est gérée par EvenementsConsumer.
 websocket_urlpatterns = [
     path("ws/", EvenementsConsumer.as_asgi()),
 ]

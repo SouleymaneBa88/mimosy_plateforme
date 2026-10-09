@@ -99,6 +99,7 @@ class ErreurRetrait(Exception):
 
 # Cette fonction retrouve le wallet d'un prestataire, ou lui en crée un s'il n'en a pas.
 def obtenir_ou_creer_wallet(prestataire) -> Wallet:
+    # get_or_create : renvoie le wallet existant, ou le crée s'il n'existe pas.
     wallet, _ = Wallet.objects.get_or_create(prestataire=prestataire)
     return wallet
 
@@ -112,7 +113,9 @@ def paiement_principal(demande_prestation) -> Optional[Payment]:
     la plus récente, ou None si la demande n'a jamais été payée.
     """
 
+    # On charge tous les paiements de la demande, du plus récent au plus ancien.
     paiements = list(Payment.objects.filter(demande_prestation=demande_prestation).order_by("-date_creation"))
+    # On cherche d'abord un paiement réussi, puis en attente, etc.
     for statut in (Payment.Statut.REUSSI, Payment.Statut.EN_ATTENTE, Payment.Statut.INITIE, Payment.Statut.A_REMBOURSER):
         for paiement in paiements:
             if paiement.statut == statut:
@@ -160,6 +163,7 @@ def _expirer_paiements_initie_abandonnes(demande_prestation: DemandePrestation) 
     fantôme bloquerait la demande pour toujours.
     """
 
+    # Tout paiement INITIE créé avant cette heure limite est considéré comme abandonné.
     limite = timezone.now() - timedelta(minutes=settings.PAYMENT_INITIE_TIMEOUT_MINUTES)
     nombre = Payment.objects.filter(
         demande_prestation=demande_prestation,
@@ -177,6 +181,7 @@ def _paiement_existant_pour_client(paiement: Payment, client) -> Payment:
     if paiement.client_id != client.id:
         # Une clé d'idempotence ne doit jamais permettre de lire le paiement d'un autre client.
         raise ErreurPaiement("Cette clé de paiement est déjà utilisée.")
+    # On marque le paiement comme "réutilisé" pour informer la vue.
     paiement.reutilise = True
     return paiement
 
@@ -190,10 +195,12 @@ def _relire_apres_conflit(client, demande_prestation: DemandePrestation, idempot
     créé, exactement comme si on était arrivé juste après elle.
     """
 
+    # Cas 1 : un paiement avec la même clé existe déjà.
     paiement = Payment.objects.filter(idempotency_key=idempotency_key).first()
     if paiement is not None:
         return _paiement_existant_pour_client(paiement, client)
 
+    # Cas 2 : un autre paiement actif existe pour cette demande.
     actif = Payment.objects.filter(demande_prestation=demande_prestation, statut__in=_STATUTS_ACTIFS).first()
     if actif is not None and actif.statut == Payment.Statut.REUSSI:
         raise ErreurPaiement("Cette demande de prestation a déjà été payée avec succès.")
@@ -368,10 +375,13 @@ def _reprendre_paiement(paiement: Payment, payeur: Optional[DetailsPayeur]) -> P
     toujours valable) et le message du fournisseur est renvoyé au client.
     """
 
+    # On signale que ce n'est pas un nouveau paiement.
     paiement.reutilise = True
+    # Rien à relancer si le paiement n'est plus en attente ou si le client n'a pas choisi de moyen.
     if paiement.statut != Payment.Statut.EN_ATTENTE or payeur is None:
         return paiement
 
+    # On demande au fournisseur un nouveau lien pour la même facture.
     resultat = _provider_du_paiement(paiement).relancer_paiement(paiement, payeur)
     if resultat.en_attente and resultat.url_paiement:
         # Conditionnel : si le paiement a été conclu entre-temps, on n'y touche pas.
@@ -382,6 +392,7 @@ def _reprendre_paiement(paiement: Payment, payeur: Optional[DetailsPayeur]) -> P
         )
         paiement.refresh_from_db()
         paiement.liens_paiement = resultat.liens_alternatifs
+    # La relance a échoué : on garde le message pour l'afficher au client.
     else:
         paiement.message_fournisseur = resultat.message
         paiement.relance_echouee = True
@@ -474,9 +485,11 @@ def marquer_paiement_reussi(paiement: Payment, reference_externe: str) -> None:
 
 # Cette fonction prévient le client et le prestataire qu'un paiement est confirmé.
 def _notifier_paiement_confirme(paiement: Payment) -> None:
+    # Import ici pour éviter un import circulaire.
     from apps.notifications.models import Notification
 
     demande = paiement.demande_prestation
+    # On formate le montant avec des espaces (ex. 10 000).
     montant = format(paiement.montant, ",.0f").replace(",", " ")
     service = demande.service.nom if demande.service_id else "la prestation"
     Notification.objects.create(
@@ -508,7 +521,9 @@ def marquer_paiement_echoue(paiement: Payment) -> None:
     """
 
     with transaction.atomic():
+        # On verrouille le paiement et on relit son statut actuel.
         paiement_verrouille = Payment.objects.select_for_update().get(pk=paiement.pk)
+        # On ne change que les paiements encore en cours.
         if paiement_verrouille.statut in (Payment.Statut.INITIE, Payment.Statut.EN_ATTENTE):
             paiement_verrouille.statut = Payment.Statut.ECHOUE
             paiement_verrouille.save(update_fields=["statut", "date_modification"])
@@ -517,6 +532,7 @@ def marquer_paiement_echoue(paiement: Payment) -> None:
 
 # Cette fonction applique ce que le fournisseur a CONFIRMÉ, après contrôle du token et du montant.
 def _appliquer_verification(paiement: Payment, verification: ResultatVerification) -> None:
+    # Le fournisseur dit "réussi" : on vérifie tout avant d'accepter.
     if verification.statut == STATUT_REUSSI:
         # La confirmation doit concerner cette prestation et être en francs CFA.
         erreur = _incoherence_facture(paiement, verification)
@@ -531,6 +547,7 @@ def _appliquer_verification(paiement: Payment, verification: ResultatVerificatio
             logger.warning("Paiement %s : montant confirmé différent du montant attendu, ignoré.", paiement.id)
             return
         marquer_paiement_reussi(paiement, paiement.reference_externe)
+    # Le fournisseur dit "échoué" : on marque le paiement comme échoué.
     elif verification.statut == STATUT_ECHOUE:
         marquer_paiement_echoue(paiement)
     # EN_ATTENTE ou INCONNU : on ne change rien, on ne devine jamais.
@@ -549,8 +566,10 @@ def _incoherence_facture(paiement: Payment, verification: ResultatVerification) 
     présente) : on refuse ce qui est faux, on ne devine pas ce qui manque.
     """
 
+    # La facture parle d'une autre demande : refus.
     if verification.identifiant_demande and verification.identifiant_demande != str(paiement.demande_prestation_id):
         return "la facture concerne une autre demande de prestation"
+    # La devise n'est pas le franc CFA : refus.
     if verification.devise and str(verification.devise).upper() not in _DEVISES_ACCEPTEES:
         return f"devise inattendue ({verification.devise})"
     return None
@@ -565,9 +584,11 @@ def verifier_statut_paiement(paiement: Payment) -> Payment:
     Ne fait rien si le paiement n'est plus EN_ATTENTE : idempotent.
     """
 
+    # Seul un paiement en attente a besoin d'être vérifié.
     if paiement.statut != Payment.Statut.EN_ATTENTE:
         return paiement
 
+    # On demande au fournisseur le vrai statut, puis on l'applique.
     verification = _provider_du_paiement(paiement).verifier_paiement(paiement)
     _appliquer_verification(paiement, verification)
 
@@ -592,6 +613,7 @@ def traiter_callback_paiement_paydunya(donnees: dict, hash_recu: str) -> Payment
     quel, sans nouvel appel ni nouvelle opération financière.
     """
 
+    # On lit et on authentifie le message envoyé par PayDunya.
     provider = get_provider("paydunya")
     try:
         annonce = provider.lire_callback_paiement(donnees, hash_recu)
@@ -650,6 +672,7 @@ def traiter_callback_paiement_paydunya(donnees: dict, hash_recu: str) -> Payment
                 "Paiement %s : callback de succès non confirmé par PayDunya (statut=%s), laissé en l'état.",
                 paiement.id, confirmation.statut,
             )
+    # PayDunya annonce un échec : on marque le paiement comme échoué.
     elif annonce.statut == STATUT_ECHOUE:
         marquer_paiement_echoue(paiement)
     # EN_ATTENTE / INCONNU : rien à faire.
@@ -751,19 +774,24 @@ def geler_fonds_bloques(paiement: Payment, reference, description: str) -> Decim
     """
 
     with transaction.atomic():
+        # On verrouille le paiement ; s'il n'est pas réussi ou déjà libéré, on ne fait rien.
         paiement = Payment.objects.select_for_update().get(pk=paiement.pk)
         if paiement.statut != Payment.Statut.REUSSI or paiement.fonds_liberes:
             return Decimal("0")
 
+        # On verrouille le wallet du prestataire.
         wallet = Wallet.objects.select_for_update().get(prestataire=paiement.demande_prestation.prestataire)
 
+        # Commission MIMOSY et montant net pour le prestataire.
         commission = (paiement.montant * settings.COMMISSION_TAUX).quantize(Decimal("0.01"))
         montant_net = paiement.montant - commission
 
+        # L'argent quitte le solde bloqué et va dans le solde gelé.
         wallet.solde_bloque = wallet.solde_bloque - paiement.montant
         wallet.solde_gele = wallet.solde_gele + montant_net
         wallet.save(update_fields=["solde_bloque", "solde_gele", "date_modification"])
 
+        # On trace la commission et le gel dans le journal.
         Transaction.objects.create(
             wallet=wallet,
             type=Transaction.Type.COMMISSION,
@@ -779,6 +807,7 @@ def geler_fonds_bloques(paiement: Payment, reference, description: str) -> Decim
             description=description,
         )
 
+        # Ces fonds ont quitté le blocage : on ne doit plus jamais les libérer.
         paiement.fonds_liberes = True
         paiement.save(update_fields=["fonds_liberes", "date_modification"])
         return montant_net
@@ -808,20 +837,25 @@ def geler_fonds(prestataire, montant: Decimal, reference, description: str) -> D
     attendu et le signaler à l'administration si les deux diffèrent.
     """
 
+    # Montant nul ou négatif : rien à geler.
     if montant <= 0:
         return Decimal("0")
 
     with transaction.atomic():
+        # On verrouille le wallet.
         wallet = Wallet.objects.select_for_update().get(prestataire=prestataire)
+        # On ne peut pas geler plus que ce qui est disponible.
         montant_gele = min(montant, wallet.solde_disponible)
 
         if montant_gele <= 0:
             return Decimal("0")
 
+        # On déplace l'argent du solde disponible vers le solde gelé.
         wallet.solde_disponible = wallet.solde_disponible - montant_gele
         wallet.solde_gele = wallet.solde_gele + montant_gele
         wallet.save(update_fields=["solde_disponible", "solde_gele", "date_modification"])
 
+        # On trace le gel dans le journal.
         Transaction.objects.create(
             wallet=wallet,
             type=Transaction.Type.GEL_LITIGE,
@@ -846,16 +880,19 @@ def degeler_fonds_vers_disponible(prestataire, montant: Decimal, reference, desc
         return Decimal("0")
 
     with transaction.atomic():
+        # On verrouille le wallet et on ne dégèle jamais plus que ce qui est gelé.
         wallet = Wallet.objects.select_for_update().get(prestataire=prestataire)
         montant_degele = min(montant, wallet.solde_gele)
 
         if montant_degele <= 0:
             return Decimal("0")
 
+        # On déplace l'argent du solde gelé vers le solde disponible.
         wallet.solde_gele = wallet.solde_gele - montant_degele
         wallet.solde_disponible = wallet.solde_disponible + montant_degele
         wallet.save(update_fields=["solde_gele", "solde_disponible", "date_modification"])
 
+        # On trace le dégel dans le journal.
         Transaction.objects.create(
             wallet=wallet,
             type=Transaction.Type.DEGEL_LITIGE,
@@ -885,27 +922,34 @@ def transferer_fonds_geles(prestataire_source, prestataire_destination, montant:
     if montant <= 0:
         return Decimal("0")
 
+    # On récupère (ou crée) les deux wallets.
     wallet_source = obtenir_ou_creer_wallet(prestataire_source)
     wallet_destination = obtenir_ou_creer_wallet(prestataire_destination)
 
+    # On trie les deux identifiants pour toujours verrouiller dans le même ordre.
     id_min, id_max = sorted([wallet_source.id, wallet_destination.id])
 
     with transaction.atomic():
         premier = Wallet.objects.select_for_update().get(pk=id_min)
         second = Wallet.objects.select_for_update().get(pk=id_max)
+        # On retrouve qui est la source et qui est la destination.
         source = premier if premier.pk == wallet_source.id else second
         destination = premier if premier.pk == wallet_destination.id else second
 
+        # On ne transfère jamais plus que ce qui est gelé chez la source.
         montant_transfere = min(montant, source.solde_gele)
         if montant_transfere <= 0:
             return Decimal("0")
 
+        # La source perd l'argent gelé...
         source.solde_gele = source.solde_gele - montant_transfere
         source.save(update_fields=["solde_gele", "date_modification"])
 
+        # ... et la destination le reçoit dans son solde disponible.
         destination.solde_disponible = destination.solde_disponible + montant_transfere
         destination.save(update_fields=["solde_disponible", "date_modification"])
 
+        # On trace le transfert dans les deux wallets.
         Transaction.objects.create(
             wallet=source,
             type=Transaction.Type.REATTRIBUTION_LITIGE,
@@ -1023,6 +1067,18 @@ def initier_retrait(prestataire, montant: Decimal, provider: str, destination: s
     # On demande au fournisseur actif de traiter ce retrait.
     resultat = get_provider().initier_retrait(retrait)
 
+    # Démonstration (PAYDUNYA_PAYOUT_DEMO, mode test) : aucun déboursement
+    # n'a eu lieu. Statut SIMULE, jamais REUSSI, et la transaction le dit.
+    if resultat.simule:
+        retrait.statut = Withdrawal.Statut.SIMULE
+        retrait.reference_externe = resultat.reference_externe or ""
+        retrait.save(update_fields=["statut", "reference_externe"])
+        Transaction.objects.filter(reference=retrait.id, type=Transaction.Type.RETRAIT).update(
+            description=f"Retrait SIMULÉ (reussi, aucun déboursement PayDunya) vers {destination}"
+        )
+        retrait.message_fournisseur = resultat.message
+        return retrait
+
     # Si le fournisseur a transmis la demande mais n'a pas encore confirmé, on reste en cours.
     if resultat.en_attente:
         retrait.statut = Withdrawal.Statut.EN_COURS
@@ -1058,6 +1114,7 @@ def traiter_callback_payout_paydunya(donnees: dict, hash_recu: str) -> Withdrawa
     mise à jour.
     """
 
+    # On lit et on authentifie le message de PayDunya.
     try:
         annonce = get_provider("paydunya").lire_callback_retrait(donnees, hash_recu)
     except ErreurFournisseur as erreur:
@@ -1075,8 +1132,10 @@ def traiter_callback_payout_paydunya(donnees: dict, hash_recu: str) -> Withdrawa
         raise ErreurRetrait(f"Aucun retrait MIMOSY pour le token {token!r}.") from erreur
 
     # Déjà conclu (callback dupliqué, ou reçu après une vérification
-    # manuelle qui a déjà tranché) : idempotent, on ne rejoue rien.
-    if retrait.statut in (Withdrawal.Statut.REUSSI, Withdrawal.Statut.ECHOUE):
+    # manuelle qui a déjà tranché) : idempotent, on ne rejoue rien. Un
+    # retrait SIMULE n'a jamais été transmis à PayDunya : aucun callback
+    # ne peut le faire passer pour un vrai retrait, ni le recréditer.
+    if retrait.statut in (Withdrawal.Statut.REUSSI, Withdrawal.Statut.ECHOUE, Withdrawal.Statut.SIMULE):
         return retrait
 
     # On vérifie que le montant reçu, s'il est fourni, correspond au montant attendu.
@@ -1086,6 +1145,7 @@ def traiter_callback_payout_paydunya(donnees: dict, hash_recu: str) -> Withdrawa
             f"différent du montant attendu ({retrait.montant})."
         )
 
+    # On applique le statut annoncé, puis on renvoie le retrait à jour.
     _appliquer_statut_retrait(retrait, annonce.statut)
     retrait.refresh_from_db()
     return retrait
@@ -1098,6 +1158,7 @@ def _appliquer_statut_retrait(retrait: Withdrawal, statut: str) -> None:
         Withdrawal.objects.filter(pk=retrait.pk, statut=Withdrawal.Statut.EN_COURS).update(
             statut=Withdrawal.Statut.REUSSI
         )
+    # Échec : on rend l'argent au prestataire.
     elif statut == STATUT_ECHOUE:
         _restaurer_solde_apres_echec_retrait(
             retrait, retrait.montant, "Déboursement PayDunya échoué : montant recrédité"
@@ -1113,6 +1174,7 @@ def verifier_statut_retrait(retrait: Withdrawal) -> Withdrawal:
     if retrait.statut != Withdrawal.Statut.EN_COURS:
         return retrait
 
+    # On demande le statut à PayDunya, puis on l'applique.
     verification = get_provider("paydunya").verifier_retrait(retrait)
     _appliquer_statut_retrait(retrait, verification.statut)
 

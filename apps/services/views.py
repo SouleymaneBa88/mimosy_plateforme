@@ -43,7 +43,13 @@ from .models import Categorie, PrestataireService, Service
 # On importe la règle centrale de visibilité des offres.
 from .visibilite import filtrer_offres_publiables
 # On importe la fonction d'interprétation du langage naturel.
-from .nlp import interpreter_requete
+from .nlp import interpreter_requete, mots_non_reconnus
+# On importe le fallback IA, utilisé seulement quand la recherche ne trouve rien.
+from .suggestions_ia import suggerer_recherches
+# Recherche locale optionnelle ; ses erreurs deviennent toujours un fallback.
+from .recherche_semantique import rechercher_offres_semantiques
+# On importe la règle commune « e-mail confirmé ».
+from apps.common.permissions import IsEmailVerified, IsPrestataireValide
 # On importe les permissions personnalisées de cette app.
 from .permissions import IsAdmin, IsOwnerOrAdmin, IsPrestataire
 # On importe tous les serializers utilisés dans ce fichier.
@@ -443,11 +449,14 @@ class PrestataireServiceViewSet(viewsets.ModelViewSet):
         if self.action in ["list", "retrieve"]:
             return [AllowAny()]
 
-        # Seul un prestataire connecté peut créer une nouvelle offre.
+        # Seul un prestataire connecté, à l'e-mail confirmé et VALIDÉ par
+        # l'administration (parcours de vérification), peut publier une offre.
         if self.action == "create":
             return [
                 IsAuthenticated(),
                 IsPrestataire(),
+                IsEmailVerified(),
+                IsPrestataireValide(),
             ]
 
         # Toute autre action nécessite d'être propriétaire ou admin.
@@ -571,6 +580,229 @@ class RecherchePagination(PageNumberPagination):
     max_page_size = 50
 
 
+# Cette fonction construit le queryset de la recherche combinée (voir RechercheView).
+def filtrer_offres_recherche(donnees, identifiants_semantiques=()):
+    """
+    Offres publiables correspondant aux critères déjà validés par
+    RechercheQuerySerializer, triées par pertinence. Partagée par
+    RechercheView et par les outils de MIMO (apps.mimo.outils) : une seule
+    logique de recherche dans MIMOSY.
+    """
+
+    # On récupère chaque critère de recherche, nettoyé.
+    texte = donnees.get("q", "").strip()
+    categorie = donnees.get("categorie", "").strip()
+    service = donnees.get("service", "").strip()
+    competence = donnees.get("competence", "").strip()
+    quartier = donnees.get("quartier", "").strip()
+    ville = donnees.get("ville", "").strip()
+    disponible = donnees.get("disponible")
+    latitude = donnees.get("latitude")
+    longitude = donnees.get("longitude")
+    rayon_km = donnees.get("rayon_km")
+    # On détermine si une recherche géographique est demandée.
+    recherche_geo_active = latitude is not None and longitude is not None
+
+    # On part des offres de catégories actives, avec les relations préchargées.
+    queryset = (
+        PrestataireService.objects
+        .filter(service__categorie__statut="ACTIVE")
+        .select_related(
+            "service__categorie",
+            "prestataire__user",
+            "prestataire__user__localisation_principale",
+        )
+        .prefetch_related("competences")
+    )
+
+    # Comme pour le reste du catalogue public, seules les offres
+    # disponibles apparaissent par défaut ; "disponible=false"
+    # permet malgré tout de les retrouver explicitement.
+    queryset = queryset.filter(
+        disponible=disponible if disponible is not None else True
+    )
+
+    # Un prestataire au profil incomplet (pas de description
+    # professionnelle, pas de localisation enregistrée) ne doit
+    # jamais apparaître dans un résultat public, quelle que soit
+    # la valeur de "disponible" demandée. Cette même fonction
+    # protège aussi la recherche intelligente (qui délègue
+    # entièrement à cette vue, voir RechercheIntelligenteView) et
+    # la carte (alimentée par ces mêmes résultats côté frontend).
+    queryset = filtrer_offres_publiables(queryset)
+
+    # Même les candidats sémantiques repassent par les règles publiques
+    # centrales (catégorie active, profil publiable, disponibilité).
+    if identifiants_semantiques:
+        queryset = queryset.filter(id__in=identifiants_semantiques)
+
+    # On applique chaque filtre structuré fourni.
+    if categorie:
+        queryset = queryset.filter(service__categorie__nom__icontains=categorie)
+
+    if service:
+        queryset = queryset.filter(service__nom__icontains=service)
+
+    if competence:
+        queryset = queryset.filter(competences__nom__icontains=competence)
+
+    if quartier:
+        queryset = queryset.filter(
+            prestataire__user__localisation_principale__quartier__icontains=quartier
+        )
+
+    if ville:
+        queryset = queryset.filter(
+            prestataire__user__localisation_principale__ville__icontains=ville
+        )
+
+    # Si une recherche géographique est active, on calcule la distance pour chaque offre.
+    if recherche_geo_active:
+        queryset = (
+            queryset
+            # Un prestataire sans localisation n'a pas de distance
+            # calculable : il ne doit pas apparaître dans une
+            # recherche géographique (il reste visible dans une
+            # recherche sans coordonnées, plus haut). On l'exclut
+            # ici, avant le calcul de distance : PostgreSQL fait
+            # ignorer les valeurs NULL par GREATEST()/LEAST(), donc
+            # filtrer sur "distance_km__isnull" après coup ne
+            # fonctionnerait pas (la formule renverrait ~20 000 km
+            # au lieu de NULL).
+            .filter(prestataire__user__localisation_principale__isnull=False)
+            .annotate(distance_km=distance_haversine_km(latitude, longitude))
+        )
+
+        # Si un rayon est précisé, on exclut les offres trop éloignées.
+        if rayon_km is not None:
+            queryset = queryset.filter(distance_km__lte=rayon_km)
+
+    # Un mot recherché peut se trouver dans des champs différents
+    # ("réparation" dans le nom du service, "fuite" dans une
+    # compétence) : chaque mot doit trouver une correspondance
+    # quelque part (chaînage de filter(), donc "ET" entre les
+    # mots), sans exiger que la phrase entière soit contiguë dans
+    # un seul champ.
+    mots = texte.split() if texte else []
+
+    # On exige que chaque mot du texte libre trouve une correspondance quelque part.
+    for mot in mots:
+        queryset = queryset.filter(
+            Q(service__nom__icontains=mot)
+            | Q(service__categorie__nom__icontains=mot)
+            | Q(competences__nom__icontains=mot)
+            | Q(prestataire__description__icontains=mot)
+        )
+
+    # On initialise le score de pertinence à zéro.
+    score = Value(0, output_field=IntegerField())
+
+    # On ajoute des points de pertinence selon la correspondance avec le texte libre.
+    if texte:
+        # Bonus supplémentaire si la phrase complète correspond
+        # exactement ou en partie au nom du service, en plus du
+        # score mot par mot ajouté plus bas.
+        score = (
+            score
+            + Case(
+                When(service__nom__iexact=texte, then=Value(10)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+            + Case(
+                When(service__nom__icontains=texte, then=Value(4)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+            + Case(
+                When(service__categorie__nom__icontains=texte, then=Value(3)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+            + Case(
+                When(competences__nom__icontains=texte, then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
+    # On ajoute des points pour chaque mot du texte qui correspond au nom du service.
+    for mot in mots:
+        score = score + Case(
+            When(service__nom__icontains=mot, then=Value(2)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+
+    # On ajoute des points de pertinence pour chaque filtre structuré exact.
+    if categorie:
+        score = score + Case(
+            When(service__categorie__nom__iexact=categorie, then=Value(5)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+
+    if service:
+        score = score + Case(
+            When(service__nom__iexact=service, then=Value(6)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+
+    if competence:
+        score = score + Case(
+            When(competences__nom__iexact=competence, then=Value(4)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+
+    if quartier:
+        score = score + Case(
+            When(
+                prestataire__user__localisation_principale__quartier__iexact=quartier,
+                then=Value(3),
+            ),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+
+    if ville:
+        score = score + Case(
+            When(
+                prestataire__user__localisation_principale__ville__iexact=ville,
+                then=Value(1),
+            ),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+
+    # La pertinence textuelle/structurée reste le premier critère
+    # de tri ; la distance ne s'ajoute qu'en second, et seulement
+    # quand une recherche géographique est réellement en cours
+    # (sinon "distance_km" n'existe pas sur ce queryset).
+    # On construit l'ordre de tri final.
+    ordre = ["-score"]
+    if identifiants_semantiques:
+        ordre = ["semantic_ordre"]
+
+    if recherche_geo_active:
+        ordre.append("distance_km")
+
+    ordre += ["service__nom", "prix"]
+
+    # On annote le score calculé, on trie, et on retire les doublons.
+    annotations = {"score": score}
+    if identifiants_semantiques:
+        # L'ordre est celui du score combiné calculé par le module ; les
+        # IDs ont tous été produits à partir des offres de cette base.
+        annotations["semantic_ordre"] = Case(
+            *[When(id=identifiant, then=Value(position)) for position, identifiant in enumerate(identifiants_semantiques)],
+            default=Value(len(identifiants_semantiques)),
+            output_field=IntegerField(),
+        )
+    return queryset.annotate(**annotations).order_by(*ordre, "service__nom", "prix").distinct()
+
+
 # Cette vue gère la recherche combinée (texte libre + filtres structurés + proximité).
 class RechercheView(generics.ListAPIView):
     """
@@ -624,208 +856,11 @@ class RechercheView(generics.ListAPIView):
         # On valide les paramètres de recherche reçus.
         parametres = RechercheQuerySerializer(data=self.request.query_params.dict())
         parametres.is_valid(raise_exception=True)
-        donnees = parametres.validated_data
-
-        # On récupère chaque critère de recherche, nettoyé.
-        texte = donnees.get("q", "").strip()
-        categorie = donnees.get("categorie", "").strip()
-        service = donnees.get("service", "").strip()
-        competence = donnees.get("competence", "").strip()
-        quartier = donnees.get("quartier", "").strip()
-        ville = donnees.get("ville", "").strip()
-        disponible = donnees.get("disponible")
-        latitude = donnees.get("latitude")
-        longitude = donnees.get("longitude")
-        rayon_km = donnees.get("rayon_km")
-        # On détermine si une recherche géographique est demandée.
-        recherche_geo_active = latitude is not None and longitude is not None
-
-        # On part des offres de catégories actives, avec les relations préchargées.
-        queryset = (
-            PrestataireService.objects
-            .filter(service__categorie__statut="ACTIVE")
-            .select_related(
-                "service__categorie",
-                "prestataire__user",
-                "prestataire__user__localisation_principale",
-            )
-            .prefetch_related("competences")
-        )
-
-        # Comme pour le reste du catalogue public, seules les offres
-        # disponibles apparaissent par défaut ; "disponible=false"
-        # permet malgré tout de les retrouver explicitement.
-        queryset = queryset.filter(
-            disponible=disponible if disponible is not None else True
-        )
-
-        # Un prestataire au profil incomplet (pas de description
-        # professionnelle, pas de localisation enregistrée) ne doit
-        # jamais apparaître dans un résultat public, quelle que soit
-        # la valeur de "disponible" demandée. Cette même fonction
-        # protège aussi la recherche intelligente (qui délègue
-        # entièrement à cette vue, voir RechercheIntelligenteView) et
-        # la carte (alimentée par ces mêmes résultats côté frontend).
-        queryset = filtrer_offres_publiables(queryset)
-
-        # On applique chaque filtre structuré fourni.
-        if categorie:
-            queryset = queryset.filter(service__categorie__nom__icontains=categorie)
-
-        if service:
-            queryset = queryset.filter(service__nom__icontains=service)
-
-        if competence:
-            queryset = queryset.filter(competences__nom__icontains=competence)
-
-        if quartier:
-            queryset = queryset.filter(
-                prestataire__user__localisation_principale__quartier__icontains=quartier
-            )
-
-        if ville:
-            queryset = queryset.filter(
-                prestataire__user__localisation_principale__ville__icontains=ville
-            )
-
-        # Si une recherche géographique est active, on calcule la distance pour chaque offre.
-        if recherche_geo_active:
-            queryset = (
-                queryset
-                # Un prestataire sans localisation n'a pas de distance
-                # calculable : il ne doit pas apparaître dans une
-                # recherche géographique (il reste visible dans une
-                # recherche sans coordonnées, plus haut). On l'exclut
-                # ici, avant le calcul de distance : PostgreSQL fait
-                # ignorer les valeurs NULL par GREATEST()/LEAST(), donc
-                # filtrer sur "distance_km__isnull" après coup ne
-                # fonctionnerait pas (la formule renverrait ~20 000 km
-                # au lieu de NULL).
-                .filter(prestataire__user__localisation_principale__isnull=False)
-                .annotate(distance_km=distance_haversine_km(latitude, longitude))
-            )
-
-            # Si un rayon est précisé, on exclut les offres trop éloignées.
-            if rayon_km is not None:
-                queryset = queryset.filter(distance_km__lte=rayon_km)
-
-        # Un mot recherché peut se trouver dans des champs différents
-        # ("réparation" dans le nom du service, "fuite" dans une
-        # compétence) : chaque mot doit trouver une correspondance
-        # quelque part (chaînage de filter(), donc "ET" entre les
-        # mots), sans exiger que la phrase entière soit contiguë dans
-        # un seul champ.
-        mots = texte.split() if texte else []
-
-        # On exige que chaque mot du texte libre trouve une correspondance quelque part.
-        for mot in mots:
-            queryset = queryset.filter(
-                Q(service__nom__icontains=mot)
-                | Q(service__categorie__nom__icontains=mot)
-                | Q(competences__nom__icontains=mot)
-                | Q(prestataire__description__icontains=mot)
-            )
-
-        # On initialise le score de pertinence à zéro.
-        score = Value(0, output_field=IntegerField())
-
-        # On ajoute des points de pertinence selon la correspondance avec le texte libre.
-        if texte:
-            # Bonus supplémentaire si la phrase complète correspond
-            # exactement ou en partie au nom du service, en plus du
-            # score mot par mot ajouté plus bas.
-            score = (
-                score
-                + Case(
-                    When(service__nom__iexact=texte, then=Value(10)),
-                    default=Value(0),
-                    output_field=IntegerField(),
-                )
-                + Case(
-                    When(service__nom__icontains=texte, then=Value(4)),
-                    default=Value(0),
-                    output_field=IntegerField(),
-                )
-                + Case(
-                    When(service__categorie__nom__icontains=texte, then=Value(3)),
-                    default=Value(0),
-                    output_field=IntegerField(),
-                )
-                + Case(
-                    When(competences__nom__icontains=texte, then=Value(2)),
-                    default=Value(0),
-                    output_field=IntegerField(),
-                )
-            )
-
-        # On ajoute des points pour chaque mot du texte qui correspond au nom du service.
-        for mot in mots:
-            score = score + Case(
-                When(service__nom__icontains=mot, then=Value(2)),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-
-        # On ajoute des points de pertinence pour chaque filtre structuré exact.
-        if categorie:
-            score = score + Case(
-                When(service__categorie__nom__iexact=categorie, then=Value(5)),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-
-        if service:
-            score = score + Case(
-                When(service__nom__iexact=service, then=Value(6)),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-
-        if competence:
-            score = score + Case(
-                When(competences__nom__iexact=competence, then=Value(4)),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-
-        if quartier:
-            score = score + Case(
-                When(
-                    prestataire__user__localisation_principale__quartier__iexact=quartier,
-                    then=Value(3),
-                ),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-
-        if ville:
-            score = score + Case(
-                When(
-                    prestataire__user__localisation_principale__ville__iexact=ville,
-                    then=Value(1),
-                ),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-
-        # La pertinence textuelle/structurée reste le premier critère
-        # de tri ; la distance ne s'ajoute qu'en second, et seulement
-        # quand une recherche géographique est réellement en cours
-        # (sinon "distance_km" n'existe pas sur ce queryset).
-        # On construit l'ordre de tri final.
-        ordre = ["-score"]
-
-        if recherche_geo_active:
-            ordre.append("distance_km")
-
-        ordre += ["service__nom", "prix"]
-
-        # On annote le score calculé, on trie, et on retire les doublons.
-        return (
-            queryset
-            .annotate(score=score)
-            .order_by(*ordre)
-            .distinct()
+        return filtrer_offres_recherche(
+            parametres.validated_data,
+            # Attribut interne exclusivement posé par RechercheIntelligenteView.
+            # Il ne crée aucune nouvelle option pour l'API GET publique.
+            getattr(self.request, "semantic_offer_ids", []),
         )
 
 
@@ -846,10 +881,13 @@ class RechercheIntelligenteView(APIView):
     même pagination que la recherche structurée existante. Aucune
     logique de filtrage n'est dupliquée ici.
 
-    Si rien n'est identifiable dans le texte, la recherche est quand
-    même exécutée sans filtre (équivalent à une recherche vide) plutôt
-    que de renvoyer une erreur : l'IA ne doit jamais empêcher d'obtenir
-    une réponse utile.
+    Si aucun métier (catégorie/service/compétence) n'est identifié, les
+    mots non reconnus sont transmis à la recherche textuelle classique
+    (paramètre q). Si rien de pertinent n'est trouvé, la réponse ne
+    renvoie AUCUN résultat (jamais tout le catalogue par défaut) et, à
+    ce moment seulement, le fallback IA propose des services/catégories
+    réels à rechercher à la place (voir apps.services.suggestions_ia) :
+    "suggestions_ia" vaut None dès qu'il existe des résultats réels.
     """
 
     # Accessible à tous, même sans être connecté.
@@ -892,6 +930,27 @@ class RechercheIntelligenteView(APIView):
         if interpretation["rayon_km"] and parametres.get("latitude"):
             parametres["rayon_km"] = str(interpretation["rayon_km"])
 
+        # Aucun métier identifié : les mots restants passent par la
+        # recherche textuelle classique ("robinet", une spécialité citée
+        # dans la description d'un prestataire...).
+        metier_identifie = bool(
+            interpretation["categorie"] or interpretation["service"] or interpretation["competence"]
+        )
+        if not metier_identifie:
+            mots_restants = mots_non_reconnus(texte, interpretation)
+            if mots_restants:
+                parametres["q"] = " ".join(mots_restants)
+
+        # Rien d'exploitable du tout ("bonjour, j'ai besoin d'aide") : on
+        # ne lance pas une recherche sans filtre, qui renverrait tout le
+        # catalogue comme s'il correspondait à la demande.
+        recherche_possible = bool(
+            parametres.get("categorie") or parametres.get("service") or parametres.get("competence")
+            or parametres.get("quartier") or parametres.get("ville") or parametres.get("q")
+        )
+        if not recherche_possible:
+            return Response(self._reponse_sans_resultat(texte, interpretation))
+
         # META copié depuis la vraie requête entrante : sans ça,
         # build_absolute_uri() (utilisé par la pagination pour "next"/
         # "previous") lève un KeyError("SERVER_NAME") dès qu'il y a
@@ -903,16 +962,66 @@ class RechercheIntelligenteView(APIView):
         requete_interne.GET = parametres
         reponse_recherche = RechercheView.as_view()(requete_interne)
 
+        # Paramètres invalides (ex. coordonnées hors bornes) : même erreur que la recherche classique.
+        if reponse_recherche.status_code != status.HTTP_200_OK:
+            return Response(reponse_recherche.data, status=reponse_recherche.status_code)
+
+        # Aucun résultat par règles/texte : l'embedding local cherche alors
+        # parmi les offres réelles. La recherche existante reste prioritaire.
+        if not reponse_recherche.data.get("count"):
+            semantique = rechercher_offres_semantiques(texte, interpretation)
+            if semantique["offres_ids"]:
+                requete_semantique = HttpRequest()
+                requete_semantique.method = "GET"
+                requete_semantique.META = request._request.META.copy()
+                # Le premier passage a pu échouer à cause de mots littéraux
+                # inconnus ("tuyau fuit") : ils ne doivent pas filtrer les
+                # candidats qu'un embedding vient précisément de rapprocher.
+                # Les contraintes géographiques sont, elles, conservées.
+                parametres_semantiques = parametres.copy()
+                for cle in ("q", "categorie", "service", "competence"):
+                    parametres_semantiques.pop(cle, None)
+                requete_semantique.GET = parametres_semantiques
+                requete_semantique.semantic_offer_ids = semantique["offres_ids"]
+                reponse_semantique = RechercheView.as_view()(requete_semantique)
+                if reponse_semantique.status_code == status.HTTP_200_OK and reponse_semantique.data.get("count"):
+                    return Response({
+                        "query": texte,
+                        "interpretation": interpretation,
+                        "correspondance_exacte": False,
+                        "recherche_semantique": {"statut": "ok", "seuil": semantique["seuil"], "modele": "embeddings"},
+                        "results": reponse_semantique.data.get("results", []),
+                        "pagination": {"count": reponse_semantique.data.get("count"), "next": reponse_semantique.data.get("next"), "previous": reponse_semantique.data.get("previous")},
+                        "suggestions_ia": None,
+                    })
+            return Response(self._reponse_sans_resultat(texte, interpretation, semantique))
+
         # On renvoie le texte original, son interprétation, et les résultats trouvés.
         return Response(
             {
                 "query": texte,
                 "interpretation": interpretation,
+                "correspondance_exacte": True,
                 "results": reponse_recherche.data.get("results", []),
                 "pagination": {
                     "count": reponse_recherche.data.get("count"),
                     "next": reponse_recherche.data.get("next"),
                     "previous": reponse_recherche.data.get("previous"),
                 },
+                "suggestions_ia": None,
             }
         )
+
+    # Cette méthode construit la réponse quand la recherche classique n'a rien trouvé.
+    @staticmethod
+    def _reponse_sans_resultat(texte, interpretation, semantique=None):
+        # "results" reste vide : une suggestion IA n'est jamais présentée comme un prestataire.
+        return {
+            "query": texte,
+            "interpretation": interpretation,
+            "correspondance_exacte": False,
+            "results": [],
+            "pagination": {"count": 0, "next": None, "previous": None},
+            "recherche_semantique": semantique or {"statut": "non_utilisee"},
+            "suggestions_ia": suggerer_recherches(texte),
+        }

@@ -355,6 +355,10 @@ class Withdrawal(models.Model):
         ECHOUE = "ECHOUE", "Échoué"
         # Le retrait a été annulé.
         ANNULE = "ANNULE", "Annulé"
+        # Retrait de démonstration (PAYDUNYA_PAYOUT_DEMO, mode test uniquement) :
+        # parcours interne complet, mais AUCUN déboursement PayDunya effectué.
+        # Volontairement distinct de REUSSI pour ne jamais passer pour un vrai retrait.
+        SIMULE = "SIMULE", "Simulation de démonstration"
 
     # Identifiant unique du retrait, généré automatiquement.
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

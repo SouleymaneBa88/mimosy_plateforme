@@ -1,0 +1,246 @@
+{
+  "conversation": [
+    {
+      "agent": "aby",
+      "champ": null,
+      "role": "assistant",
+      "texte": "Bonjour, je m'appelle Aby. Je suis l'assistante IA de MIMOSY. Je vais vous accompagner pour compléter vos premières informations professionnelles. Cela prendra seulement quelques minutes. Vous pouvez me répondre à la voix ou par écrit."
+    },
+    {
+      "agent": "aby",
+      "champ": "metier",
+      "role": "assistant",
+      "texte": "Quel est votre métier ?"
+    },
+    {
+      "champ": "metier",
+      "role": "prestataire",
+      "texte": "Électricien"
+    },
+    {
+      "agent": "aby",
+      "champ": "experience",
+      "role": "assistant",
+      "texte": "J'ai rattaché votre métier au domaine « Électricité » et noté : Installation électrique. Vous pourrez corriger ces choix dans le résumé. Depuis combien d'années exercez-vous ce métier ?"
+    },
+    {
+      "agent": "aby",
+      "champ": null,
+      "langue": "wo",
+      "role": "assistant",
+      "texte": "Baax na, nu ngi kontine ci Wolof (Sénégal)."
+    },
+    {
+      "agent": "aby",
+      "champ": "experience",
+      "langue": "wo",
+      "role": "assistant",
+      "texte": "Ñaata at ngeen def métier bii?"
+    }
+  ],
+  "inconnue": {
+    "corps": {
+      "langue": "Tànn leen benn làkk ci yi ñu leen jox."
+    },
+    "statut": 400
+  },
+  "prechauffees": [
+    [
+      "aby",
+      "Bonjour, je m'appelle Aby. Je suis l'assistante IA de MIMOSY. Je vais vous accompagner pour compléter vos premières informations professionnelles. Cela prendra seulement quelques minutes. Vous pouvez me répondre à la voix ou par écrit.",
+      "fr"
+    ],
+    [
+      "aby",
+      "Quel est votre métier ?",
+      "fr"
+    ],
+    [
+      "aby",
+      "J'ai rattaché votre métier au domaine « Électricité » et noté : Installation électrique. Vous pourrez corriger ces choix dans le résumé. Depuis combien d'années exercez-vous ce métier ?",
+      "fr"
+    ],
+    [
+      "aby",
+      "Baax na, nu ngi kontine ci Wolof (Sénégal).",
+      "wo"
+    ],
+    [
+      "aby",
+      "Ñaata at ngeen def métier bii?",
+      "wo"
+    ]
+  ],
+  "vers_wolof": {
+    "corps": {
+      "compte": {
+        "email": "carac-prestataire@test.com",
+        "nom": "Awa Ndiaye",
+        "telephone": "770000095"
+      },
+      "conversation": [
+        {
+          "agent": "aby",
+          "champ": null,
+          "role": "assistant",
+          "texte": "Bonjour, je m'appelle Aby. Je suis l'assistante IA de MIMOSY. Je vais vous accompagner pour compléter vos premières informations professionnelles. Cela prendra seulement quelques minutes. Vous pouvez me répondre à la voix ou par écrit."
+        },
+        {
+          "agent": "aby",
+          "champ": "metier",
+          "role": "assistant",
+          "texte": "Quel est votre métier ?"
+        },
+        {
+          "champ": "metier",
+          "role": "prestataire",
+          "texte": "Électricien"
+        },
+        {
+          "agent": "aby",
+          "champ": "experience",
+          "role": "assistant",
+          "texte": "J'ai rattaché votre métier au domaine « Électricité » et noté : Installation électrique. Vous pourrez corriger ces choix dans le résumé. Depuis combien d'années exercez-vous ce métier ?"
+        },
+        {
+          "agent": "aby",
+          "champ": null,
+          "langue": "wo",
+          "role": "assistant",
+          "texte": "Baax na, nu ngi kontine ci Wolof (Sénégal)."
+        },
+        {
+          "agent": "aby",
+          "champ": "experience",
+          "langue": "wo",
+          "role": "assistant",
+          "texte": "Ñaata at ngeen def métier bii?"
+        }
+      ],
+      "langue": {
+        "bcp47": "wo-SN",
+        "code": "wo",
+        "dictee_navigateur": false,
+        "libelle": "Wolof (Sénégal)",
+        "voix_navigateur": false,
+        "voix_serveur": false
+      },
+      "langues": [
+        {
+          "bcp47": "fr-FR",
+          "code": "fr",
+          "dictee_navigateur": true,
+          "libelle": "Français",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        {
+          "bcp47": "en-US",
+          "code": "en",
+          "dictee_navigateur": true,
+          "libelle": "English",
+          "voix_navigateur": true,
+          "voix_serveur": true
+        },
+        {
+          "bcp47": "wo-SN",
+          "code": "wo",
+          "dictee_navigateur": false,
+          "libelle": "Wolof (Sénégal)",
+          "voix_navigateur": false,
+          "voix_serveur": false
+        }
+      ],
+      "manquants": [
+        "experience",
+        "zone_intervention",
+        "description"
+      ],
+      "options": {
+        "domaine": [
+          {
+            "id": "<uuid>",
+            "libelle": "Plomberie"
+          },
+          {
+            "id": "<uuid>",
+            "libelle": "Électricité"
+          }
+        ],
+        "services": [
+          {
+            "id": "<uuid>",
+            "libelle": "Installation électrique"
+          }
+        ]
+      },
+      "question": {
+        "champ": "experience",
+        "options": [],
+        "pourquoi": "Seen expérience dafay dëgëral kóolute client yi; wax leen 0 su fekkee yéena ngi tàmbali.",
+        "texte": "Ñaata at ngeen def métier bii?",
+        "type": "nombre",
+        "valeur_actuelle": null
+      },
+      "questions": {
+        "description": {
+          "pourquoi": "Li ngeen bind dina feeñ ci seen profil public.",
+          "texte": "Wone leen seen liggéey ci ay kàddu yu gàtt.",
+          "type": "texte_long"
+        },
+        "disponibilites": {
+          "exemple": "Altine ba Gaawu, 8 h ba 18 h",
+          "pourquoi": "Noonu client yi dinañu xam kañ lañu leen mën a woo.",
+          "texte": "Ban fan ak ban waxtu ngeen di liggéey?",
+          "type": "texte"
+        },
+        "domaine": {
+          "pourquoi": "Domaine bi dafay tax client yi gis leen ci catégorie bu baax bi.",
+          "texte": "Ci ban domaine ngeen di liggéey?",
+          "type": "texte_ou_choix"
+        },
+        "experience": {
+          "pourquoi": "Seen expérience dafay dëgëral kóolute client yi; wax leen 0 su fekkee yéena ngi tàmbali.",
+          "texte": "Ñaata at ngeen def métier bii?",
+          "type": "nombre"
+        },
+        "metier": {
+          "exemple": "Électricien, plombier, femme de ménage...",
+          "pourquoi": "Mooy li client yi di njëkk a gis ci seen profil.",
+          "texte": "Lan mooy seen métier?",
+          "type": "texte"
+        },
+        "services": {
+          "pourquoi": "Bu seen profil validé, mën ngeen tëral tarif bu nekk ci ñoom.",
+          "texte": "Ban xeetu liggéey ngeen gën di def?",
+          "type": "texte_ou_choix_multiple"
+        },
+        "zone_intervention": {
+          "exemple": "Dakar Plateau, Médina, Parcelles Assainies...",
+          "pourquoi": "Noonu, MIMOSY dina leen yónnee demande yu jege seen kër.",
+          "texte": "Ci ban dëkk walla ban quartier ngeen di liggéey?",
+          "type": "texte"
+        }
+      },
+      "resume": {
+        "description": "",
+        "disponibilites": "",
+        "domaine": {
+          "id": "<uuid>",
+          "libelle": "Électricité"
+        },
+        "experience": null,
+        "metier": "Électricien",
+        "services": [
+          {
+            "id": "<uuid>",
+            "libelle": "Installation électrique"
+          }
+        ],
+        "zone_intervention": ""
+      },
+      "termine": false
+    },
+    "statut": 200
+  }
+}

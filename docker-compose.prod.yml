@@ -7,7 +7,7 @@
 #   seul point d'entrée, qui sert l'application Vue et relaie /api, /ws et /admin.
 #
 # HTTPS : en production réelle, le certificat TLS est posé devant nginx (ou dans
-# nginx) ; nginx transmet alors X-Forwarded-Proto: https à Django.
+# nginx) ; nginx transmet : https à Django.
 #
 # Volumes PROTÉGÉS : la base et les fichiers déposés sont des volumes
 # « externes ». Compose ne les crée pas et ne peut PAS les supprimer, même avec

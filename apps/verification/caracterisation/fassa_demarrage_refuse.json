@@ -1,0 +1,14 @@
+{
+  "dossier_incomplet": {
+    "corps": {
+      "detail": "Complétez d'abord votre profil et vos documents."
+    },
+    "statut": 400
+  },
+  "sans_consentement": {
+    "corps": {
+      "detail": "Votre accord est nécessaire : l'entretien est enregistré et analysé pour vérifier votre profil."
+    },
+    "statut": 400
+  }
+}
